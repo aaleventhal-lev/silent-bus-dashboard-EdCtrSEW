@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Silent Bus Dashboard - Ed Center South (Live)</title>
+  <title>Silent Bus Dashboard - Ed Center Sewickley (Live)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <script src="https://alcdn.msauth.net/browser/2.37.0/js/msal-browser.min.js"></script>
   <style>
@@ -72,21 +72,19 @@
 </head>
 
 <body>
-  <h1>Silent Bus Dashboard — Ed Center South (Live)</h1>
+  <h1>Silent Bus Dashboard — Ed Center Sewickley (Live)</h1>
   <div id="login"><button onclick="signIn()">Sign in with Microsoft</button></div>
   <button id="enableSound">Enable Sound</button>
   <button id="resetBoardBtn">🔄 Reset Board</button>
 
   <div id="board" style="display:none;">
     <div class="column" id="Not Here"><h2>🚍 Not Here</h2></div>
-    <div class="column" id="On Deck"><h2>⌚ On Deck</h2></div>
     <div class="column" id="Here"><h2>✅ Here</h2></div>
     <div class="column" id="Gone"><h2>🏁 Gone</h2></div>
   </div>
 
   <!-- 🎵 Sounds -->
   <audio id="dingHere" src="https://actions.google.com/sounds/v1/cartoon/cartoon_boing.ogg" preload="auto"></audio>
-  <audio id="dingOnDeck" src="https://actions.google.com/sounds/v1/cartoon/clang_and_wobble.ogg" preload="auto"></audio>
 
   <!-- 🔄 Loading overlay -->
   <div id="loadingOverlay">
@@ -99,7 +97,7 @@
     auth: {
       clientId: "9fa63e7d-529b-4b31-aeba-240de53122e9",
       authority: "https://login.microsoftonline.com/9c6c3caa-8f3d-4f3c-98f7-e4feea479b7d",
-      redirectUri: "https://aaleventhal-lev.github.io/silent-bus-dashboard-location2/"
+      redirectUri: "https://aaleventhal-lev.github.io/silent-bus-dashboard-location3/"
     },
     cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false }
   };
@@ -108,23 +106,22 @@
   if (accounts.length > 0) msalInstance.setActiveAccount(accounts[0]);
 
   let accessToken = null;
-  const siteUrl = "https://thewatsoninstitute.sharepoint.com/sites/EdCenterSouthStaffPortal";
-  const listName = "Silent Bus Admin List - South";
+  const siteUrl = "https://thewatsoninstitute.sharepoint.com/sites/EdCenterSewickleyStaffResourceHub";
+  const listName = "SEW Silent Bus Admin List";
   let previousStatuses = {};
   let initialized = false;
   let soundEnabled = false;
 
   const dingHere = document.getElementById("dingHere");
-  const dingOnDeck = document.getElementById("dingOnDeck");
   const enableSoundButton = document.getElementById("enableSound");
   const resetButton = document.getElementById("resetBoardBtn");
 
   // ✅ Wing color-coding (based on SharePoint choice values)
   const wingStyles = {
     "Front":      { bg: "#DBEAFE", border: "#2563EB" }, // light blue
-    "B Wing":     { bg: "#DCFCE7", border: "#16A34A" }, // light green
-    "C Wing":     { bg: "#FEE2E2", border: "#DC2626" }, // light red
-    "Staff Cafe": { bg: "#FEF9C3", border: "#CA8A04" }, // light yellow
+    "Back Playground":     { bg: "#DCFCE7", border: "#16A34A" }, // light green
+    "Receiving":     { bg: "#FEE2E2", border: "#DC2626" }, // light red
+    "D-extension": { bg: "#FEF9C3", border: "#CA8A04" }, // light yellow
     "Unassigned": { bg: "#E5E7EB", border: "#6B7280" }  // gray
   };
 
@@ -191,7 +188,6 @@
           const newStatus = bus.status;
           if (oldStatus && oldStatus !== newStatus) {
             if (newStatus === "Here") { dingHere.pause(); dingHere.currentTime = 0; dingHere.play().catch(()=>{}); }
-            if (newStatus === "On Deck") { dingOnDeck.pause(); dingOnDeck.currentTime = 0; dingOnDeck.play().catch(()=>{}); }
           }
         }
       }
@@ -206,7 +202,7 @@
   }
 
   function render(buses) {
-    ["Not Here","On Deck","Here","Gone"].forEach(status => {
+    ["Not Here","Here","Gone"].forEach(status => {
       const col = document.getElementById(status);
       col.querySelectorAll(".bus").forEach(b => b.remove());
 
@@ -262,7 +258,6 @@
 
         if (soundEnabled) {
           if (bus.status === "Here") { dingHere.pause(); dingHere.currentTime=0; dingHere.play().catch(()=>{}); }
-          if (bus.status === "On Deck") { dingOnDeck.pause(); dingOnDeck.currentTime=0; dingOnDeck.play().catch(()=>{}); }
         }
 
         await updateListItem(bus);
