@@ -118,12 +118,25 @@
 
   // ✅ Wing color-coding (based on SharePoint choice values)
   const wingStyles = {
-    "Front":      { bg: "#DBEAFE", border: "#2563EB" }, // light blue
-    "Back Playground":     { bg: "#DCFCE7", border: "#16A34A" }, // light green
-    "Receiving":     { bg: "#FEE2E2", border: "#DC2626" }, // light red
-    "D-extension": { bg: "#FEF9C3", border: "#CA8A04" }, // light yellow
-    "Unassigned": { bg: "#E5E7EB", border: "#6B7280" }  // gray
+    "Front":          { bg: "#DBEAFE", border: "#2563EB" }, // light blue
+    "Back Playground":{ bg: "#DCFCE7", border: "#16A34A" }, // light green
+    "Receiving":      { bg: "#FEE2E2", border: "#DC2626" }, // light red
+    "D-extension":    { bg: "#FEF9C3", border: "#CA8A04" }, // light yellow
+    "Unassigned":     { bg: "#E5E7EB", border: "#6B7280" }  // gray
   };
+
+  // ✅ Wing grouping order (edit this anytime)
+  const wingOrder = {
+    "Front": 1,
+    "Back Playground": 2,
+    "Receiving": 3,
+    "D-extension": 4,
+    "Unassigned": 99
+  };
+
+  function wingRank(wing) {
+    return wingOrder[wing] ?? 98;
+  }
 
   function applyWingStyle(div, wing) {
     const style = wingStyles[wing] || wingStyles["Unassigned"];
@@ -136,7 +149,9 @@
     enableSoundButton.style.display = "none";
   });
 
-  function showLoading(show) { document.getElementById("loadingOverlay").style.display = show ? "flex" : "none"; }
+  function showLoading(show) {
+    document.getElementById("loadingOverlay").style.display = show ? "flex" : "none";
+  }
 
   async function signIn() {
     try {
@@ -166,7 +181,6 @@
     if (!accessToken) return;
     showLoading(true);
     try {
-      // ✅ Added Wing to $select
       const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items?$select=Id,Title,Status,Wing`;
       const response = await fetch(endpoint, {
         headers: { "Authorization": `Bearer ${accessToken}`, "Accept": "application/json;odata=nometadata" }
@@ -174,7 +188,6 @@
       if (!response.ok) throw new Error(`SharePoint API error: ${response.status}`);
       const data = await response.json();
 
-      // ✅ Added wing field
       const buses = data.value.map(item => ({
         id: item.Id,
         name: item.Title,
@@ -187,7 +200,11 @@
           const oldStatus = previousStatuses[bus.id];
           const newStatus = bus.status;
           if (oldStatus && oldStatus !== newStatus) {
-            if (newStatus === "Here") { dingHere.pause(); dingHere.currentTime = 0; dingHere.play().catch(()=>{}); }
+            if (newStatus === "Here") {
+              dingHere.pause();
+              dingHere.currentTime = 0;
+              dingHere.play().catch(()=>{});
+            }
           }
         }
       }
@@ -197,8 +214,11 @@
 
       initialized = true;
       render(buses);
-    } catch (error) { console.error("Error loading list data:", error); }
-    finally { showLoading(false); }
+    } catch (error) {
+      console.error("Error loading list data:", error);
+    } finally {
+      showLoading(false);
+    }
   }
 
   function render(buses) {
@@ -206,7 +226,20 @@
       const col = document.getElementById(status);
       col.querySelectorAll(".bus").forEach(b => b.remove());
 
-      buses.filter(b => b.status===status).forEach(bus => {
+      // ✅ Sort buses within this status by Wing, then by Name
+      const sorted = buses
+        .filter(b => b.status === status)
+        .sort((a, b) => {
+          const wingDiff = wingRank(a.wing) - wingRank(b.wing);
+          if (wingDiff !== 0) return wingDiff;
+
+          return (a.name || "").localeCompare((b.name || ""), undefined, {
+            numeric: true,
+            sensitivity: "base"
+          });
+        });
+
+      sorted.forEach(bus => {
         const div = document.createElement("div");
         div.className = "bus";
         div.draggable = true;
@@ -252,12 +285,18 @@
         e.preventDefault();
         const id = e.dataTransfer.getData("text/plain");
         const bus = buses.find(b => b.id == id);
+        if (!bus) return;
         if (bus.status === col.id) return;
+
         bus.status = col.id;
         render(buses);
 
         if (soundEnabled) {
-          if (bus.status === "Here") { dingHere.pause(); dingHere.currentTime=0; dingHere.play().catch(()=>{}); }
+          if (bus.status === "Here") {
+            dingHere.pause();
+            dingHere.currentTime = 0;
+            dingHere.play().catch(()=>{});
+          }
         }
 
         await updateListItem(bus);
