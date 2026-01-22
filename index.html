@@ -80,7 +80,7 @@
   <div id="board" style="display:none;">
     <div class="column" id="Not Here"><h2>🚍 Not Here</h2></div>
     <div class="column" id="Here"><h2>✅ Here</h2></div>
-    <div class="column" id="Gone"><h2>🏁 Gone</h2></div>
+    <!-- ✅ Gone column removed -->
   </div>
 
   <!-- 🎵 Sounds -->
@@ -125,7 +125,7 @@
     "Unassigned":     { bg: "#E5E7EB", border: "#6B7280" }  // gray
   };
 
-  // ✅ Wing grouping order (edit this anytime)
+  // ✅ Wing grouping order (used for Not Here only in this version)
   const wingOrder = {
     "Front": 1,
     "Back Playground": 2,
@@ -169,7 +169,7 @@
       document.getElementById("login").style.display = "none";
       enableSoundButton.style.display = "block";
       document.getElementById("board").style.display = "flex";
-      resetButton.style.display = "block"; // ✅ Show Reset after login
+      resetButton.style.display = "block";
       await loadListData();
 
     } catch (error) {
@@ -181,7 +181,8 @@
     if (!accessToken) return;
     showLoading(true);
     try {
-      const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items?$select=Id,Title,Status,Wing`;
+      // ✅ Added Modified so we can sort "Here" by most recently updated (i.e., moved into Here)
+      const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items?$select=Id,Title,Status,Wing,Modified`;
       const response = await fetch(endpoint, {
         headers: { "Authorization": `Bearer ${accessToken}`, "Accept": "application/json;odata=nometadata" }
       });
@@ -192,7 +193,8 @@
         id: item.Id,
         name: item.Title,
         status: item.Status || "Not Here",
-        wing: item.Wing || "Unassigned"
+        wing: item.Wing || "Unassigned",
+        modified: item.Modified ? new Date(item.Modified).getTime() : 0
       }));
 
       if (initialized && soundEnabled) {
@@ -222,22 +224,41 @@
   }
 
   function render(buses) {
-    ["Not Here","Here","Gone"].forEach(status => {
+    // ✅ Gone removed
+    ["Not Here","Here"].forEach(status => {
       const col = document.getElementById(status);
       col.querySelectorAll(".bus").forEach(b => b.remove());
 
-      // ✅ Sort buses within this status by Wing, then by Name
-      const sorted = buses
-        .filter(b => b.status === status)
-        .sort((a, b) => {
-          const wingDiff = wingRank(a.wing) - wingRank(b.wing);
-          if (wingDiff !== 0) return wingDiff;
+      let sorted;
 
-          return (a.name || "").localeCompare((b.name || ""), undefined, {
-            numeric: true,
-            sensitivity: "base"
+      if (status === "Here") {
+        // ✅ Newest moved/updated buses at the top
+        sorted = buses
+          .filter(b => b.status === "Here")
+          .sort((a, b) => {
+            const timeDiff = (b.modified || 0) - (a.modified || 0);
+            if (timeDiff !== 0) return timeDiff;
+
+            // tie-breaker by name
+            return (a.name || "").localeCompare((b.name || ""), undefined, {
+              numeric: true,
+              sensitivity: "base"
+            });
           });
-        });
+      } else {
+        // ✅ Not Here keeps wing grouping + name sort
+        sorted = buses
+          .filter(b => b.status === "Not Here")
+          .sort((a, b) => {
+            const wingDiff = wingRank(a.wing) - wingRank(b.wing);
+            if (wingDiff !== 0) return wingDiff;
+
+            return (a.name || "").localeCompare((b.name || ""), undefined, {
+              numeric: true,
+              sensitivity: "base"
+            });
+          });
+      }
 
       sorted.forEach(bus => {
         const div = document.createElement("div");
@@ -245,10 +266,8 @@
         div.draggable = true;
         div.dataset.id = bus.id;
 
-        // ✅ Apply wing background + border
         applyWingStyle(div, bus.wing);
 
-        // ✅ Display bus name + wing pill tag
         div.innerHTML = `
           <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
             <span>${bus.name}</span>
@@ -288,15 +307,14 @@
         if (!bus) return;
         if (bus.status === col.id) return;
 
+        // ✅ Only possible columns now are Not Here and Here
         bus.status = col.id;
         render(buses);
 
-        if (soundEnabled) {
-          if (bus.status === "Here") {
-            dingHere.pause();
-            dingHere.currentTime = 0;
-            dingHere.play().catch(()=>{});
-          }
+        if (soundEnabled && bus.status === "Here") {
+          dingHere.pause();
+          dingHere.currentTime = 0;
+          dingHere.play().catch(()=>{});
         }
 
         await updateListItem(bus);
@@ -367,3 +385,4 @@
   </script>
 </body>
 </html>
+
