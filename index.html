@@ -144,9 +144,23 @@
     div.style.borderLeft = `10px solid ${style.border}`;
   }
 
-  enableSoundButton.addEventListener("click", () => {
+  enableSoundButton.addEventListener("click", async () => {
     soundEnabled = true;
     enableSoundButton.style.display = "none";
+
+    try {
+      // PRIME: must be triggered by user gesture
+      dingHere.pause();
+      dingHere.currentTime = 0;
+
+      await dingHere.play();  //unlocks audio on IOS
+      dingHere.pause();       // stop immediately
+      dingHere.currentTime = 0;
+      
+      console.log ("Audio primed OK");
+    } catch (err) {
+      console.warn ("Audio prime failed:", err);
+    }
   });
 
   function showLoading(show) {
@@ -314,7 +328,7 @@
         if (soundEnabled && bus.status === "Here") {
           dingHere.pause();
           dingHere.currentTime = 0;
-          dingHere.play().catch(()=>{});
+          dingHere.play().catch(err => console.warn("Audio play blocked:", err));
         }
 
         await updateListItem(bus);
