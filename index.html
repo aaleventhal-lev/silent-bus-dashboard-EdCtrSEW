@@ -7,47 +7,89 @@
   <script src="https://alcdn.msauth.net/browser/2.37.0/js/msal-browser.min.js"></script>
   <style>
     body { font-family: system-ui, "Segoe UI", Arial; background:#f1f5f9; margin:20px; }
-    h1 { text-align:center; }
-    #board { display:flex; gap:16px; margin-top:12px; }
+    h1 { text-align:center; margin: 6px 0 10px; }
+
+    /* Status banner */
+    #statusBar {
+      display:none;
+      margin: 0 auto 12px;
+      max-width: 980px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid #e2e8f0;
+      background: #ffffff;
+      color: #0f172a;
+      box-shadow:0 1px 4px rgba(0,0,0,0.06);
+      font-size: 0.95em;
+      line-height: 1.25;
+    }
+    #statusBar .row { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+    #statusPill {
+      display:inline-block;
+      font-weight:700;
+      padding:4px 10px;
+      border-radius:999px;
+      background:#e2e8f0;
+      color:#0f172a;
+      font-size: 0.9em;
+    }
+    #statusMsg { color:#334155; }
+    #retryBtn {
+      display:none;
+      padding:6px 10px;
+      border:none;
+      border-radius:8px;
+      background:#2563eb;
+      color:white;
+      cursor:pointer;
+      font-weight:600;
+    }
+    #retryBtn:hover { background:#1e40af; }
+
+    #board { display:flex; gap:16px; margin-top:12px; max-width: 980px; margin-left:auto; margin-right:auto; }
     .column { flex:1; background:white; border-radius:10px; padding:12px; min-height:400px; box-shadow:0 1px 4px rgba(0,0,0,0.08); }
-    .column h2 { text-align:center; }
+    .column h2 { text-align:center; margin: 2px 0 10px; }
 
     /* Bus tile */
     .bus {
-      background:#e6f0ff; /* will be overridden by wing styling */
+      background:#e6f0ff; /* overridden by wing styling */
       margin:6px;
       padding:10px;
       border-radius:8px;
       cursor:grab;
       transition:transform 0.1s ease;
-      border-left: 10px solid transparent; /* wing color border */
+      border-left: 10px solid transparent;
+      user-select:none;
     }
     .bus.dragging { opacity:0.5; transform:scale(1.05); }
+
+    /* Pending (not saved yet) */
+    .bus.pending {
+      outline: 2px dashed #f59e0b;
+      outline-offset: 2px;
+    }
 
     button { padding:8px 16px; border:none; border-radius:6px; background:#2563eb; color:white; cursor:pointer; }
     button:hover { background:#1e40af; }
     #login { display:flex; justify-content:center; margin:20px; }
     #enableSound { display:none; margin:10px auto; }
 
-    /* 🔄 Reset button styling */
     #resetBoardBtn {
       display:none;
       margin:10px auto;
       background-color:#c0392b;
     }
-    #resetBoardBtn:hover {
-      background-color:#922b21;
-    }
+    #resetBoardBtn:hover { background-color:#922b21; }
 
-    /* 🔄 Loading overlay */
+    /* Loading overlay */
     #loadingOverlay {
       position: fixed;
       top: 0; left: 0; right: 0; bottom: 0;
-      background: rgba(241, 245, 249, 0.9);
+      background: rgba(241, 245, 249, 0.85);
       display: none;
       align-items: center;
       justify-content: center;
-      font-size: 1.5em;
+      font-size: 1.2em;
       color: #2563eb;
       z-index: 1000;
     }
@@ -62,80 +104,149 @@
     }
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 
-    /* Flash animation for new/updated buses */
-    @keyframes flash {
-      0% { background-color: #fff59d; }
-      100% { background-color: #e6f0ff; }
-    }
-    .flash { animation: flash 1s ease; }
+    @keyframes flash { 0% { background-color: #fff59d; } 100% { background-color: inherit; } }
+    .flash { animation: flash 0.9s ease; }
   </style>
 </head>
 
 <body>
   <h1>Silent Bus Dashboard — Ed Center Sewickley (Live)</h1>
-  <div id="login"><button onclick="signIn()">Sign in with Microsoft</button></div>
+
+  <div id="statusBar">
+    <div class="row">
+      <div>
+        <span id="statusPill">Status</span>
+        <span id="statusMsg"></span>
+      </div>
+      <button id="retryBtn" onclick="manualRetry()">Retry pending saves</button>
+    </div>
+  </div>
+
+  <div id="login"><button id="signInBtn" onclick="signIn()">Sign in with Microsoft</button></div>
   <button id="enableSound">Enable Sound</button>
   <button id="resetBoardBtn">🔄 Reset Board</button>
 
   <div id="board" style="display:none;">
     <div class="column" id="Not Here"><h2>🚍 Not Here</h2></div>
     <div class="column" id="Here"><h2>✅ Here</h2></div>
-    <!-- ✅ Gone column removed -->
   </div>
 
   <!-- 🎵 Sounds -->
   <audio id="dingHere" src="https://actions.google.com/sounds/v1/cartoon/cartoon_boing.ogg" preload="auto"></audio>
 
-  <!-- 🔄 Loading overlay -->
+  <!-- Loading overlay -->
   <div id="loadingOverlay">
     <div class="spinner"></div>
-    <span>Refreshing bus list…</span>
+    <span>Refreshing…</span>
   </div>
 
   <script>
+  /***************
+   * CONFIG
+   ***************/
   const msalConfig = {
     auth: {
       clientId: "9fa63e7d-529b-4b31-aeba-240de53122e9",
       authority: "https://login.microsoftonline.com/9c6c3caa-8f3d-4f3c-98f7-e4feea479b7d",
-      redirectUri: "https://aaleventhal-lev.github.io/silent-bus-dashboard-location3/"
+      redirectUri: "https://aaleventhal-lev.github.io/silent-bus-dashboard-EdCtrSEW/"
     },
     cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false }
   };
+
+  const siteUrl = "https://thewatsoninstitute.sharepoint.com/sites/EdCenterSewickleyStaffResourceHub";
+  const listName = "SEW Silent Bus Admin List";
+
+  // Wing styles + order
+  const wingStyles = {
+    "Front":          { bg: "#DBEAFE", border: "#2563EB" },
+    "Back Playground":{ bg: "#DCFCE7", border: "#16A34A" },
+    "Receiving":      { bg: "#FEE2E2", border: "#DC2626" },
+    "D-extension":    { bg: "#FEF9C3", border: "#CA8A04" },
+    "Unassigned":     { bg: "#E5E7EB", border: "#6B7280" }
+  };
+  const wingOrder = { "Front":1, "Back Playground":2, "Receiving":3, "D-extension":4, "Unassigned":99 };
+  const wingRank = (w) => (wingOrder[w] ?? 98);
+
+  /***************
+   * STATE
+   ***************/
   const msalInstance = new msal.PublicClientApplication(msalConfig);
   const accounts = msalInstance.getAllAccounts();
   if (accounts.length > 0) msalInstance.setActiveAccount(accounts[0]);
 
   let accessToken = null;
-  const siteUrl = "https://thewatsoninstitute.sharepoint.com/sites/EdCenterSewickleyStaffResourceHub";
-  const listName = "SEW Silent Bus Admin List";
-  let previousStatuses = {};
-  let initialized = false;
-  let soundEnabled = false;
 
+  let soundEnabled = false;
+  let initialized = false;
+
+  // last known server status snapshot (for flash/sound comparisons)
+  let previousStatuses = {};
+
+  // local working set used for rendering (can diverge while offline)
+  let busesState = [];
+
+  // prevents refresh overwriting UI during a save
+  let isSaving = false;
+
+  // offline/backoff behavior
+  let offline = false;
+  let pollTimer = null;
+  let backoffMs = 15000;     // starts at 15s
+  const BACKOFF_MIN = 15000; // 15s
+  const BACKOFF_MAX = 60000; // 60s
+
+  // pending saves: busId -> { desiredStatus, updatedAt }
+  const pendingSaves = new Map();
+
+  /***************
+   * ELEMENTS
+   ***************/
   const dingHere = document.getElementById("dingHere");
   const enableSoundButton = document.getElementById("enableSound");
   const resetButton = document.getElementById("resetBoardBtn");
 
-  // ✅ Wing color-coding (based on SharePoint choice values)
-  const wingStyles = {
-    "Front":          { bg: "#DBEAFE", border: "#2563EB" }, // light blue
-    "Back Playground":{ bg: "#DCFCE7", border: "#16A34A" }, // light green
-    "Receiving":      { bg: "#FEE2E2", border: "#DC2626" }, // light red
-    "D-extension":    { bg: "#FEF9C3", border: "#CA8A04" }, // light yellow
-    "Unassigned":     { bg: "#E5E7EB", border: "#6B7280" }  // gray
-  };
+  const statusBar = document.getElementById("statusBar");
+  const statusPill = document.getElementById("statusPill");
+  const statusMsg = document.getElementById("statusMsg");
+  const retryBtn = document.getElementById("retryBtn");
 
-  // ✅ Wing grouping order (used for Not Here only in this version)
-  const wingOrder = {
-    "Front": 1,
-    "Back Playground": 2,
-    "Receiving": 3,
-    "D-extension": 4,
-    "Unassigned": 99
-  };
+  function showLoading(show, text="Refreshing…") {
+    const overlay = document.getElementById("loadingOverlay");
+    overlay.querySelector("span").textContent = text;
+    overlay.style.display = show ? "flex" : "none";
+  }
 
-  function wingRank(wing) {
-    return wingOrder[wing] ?? 98;
+  function setStatus(kind, msg, showRetry=false) {
+    statusBar.style.display = "block";
+    statusMsg.textContent = msg || "";
+
+    // Kind: ok | saving | offline | warn
+    if (kind === "ok") {
+      statusPill.textContent = "Online";
+      statusPill.style.background = "#DCFCE7";
+      statusPill.style.color = "#14532d";
+    } else if (kind === "saving") {
+      statusPill.textContent = "Saving…";
+      statusPill.style.background = "#DBEAFE";
+      statusPill.style.color = "#1e3a8a";
+    } else if (kind === "offline") {
+      statusPill.textContent = "Offline";
+      statusPill.style.background = "#FEE2E2";
+      statusPill.style.color = "#7f1d1d";
+    } else {
+      statusPill.textContent = "Notice";
+      statusPill.style.background = "#FEF3C7";
+      statusPill.style.color = "#78350f";
+    }
+
+    retryBtn.style.display = showRetry ? "inline-block" : "none";
+  }
+
+  function clearStatusIfClean() {
+    // Hide banner when everything is normal & no pending
+    if (!offline && !isSaving && pendingSaves.size === 0) {
+      statusBar.style.display = "none";
+    }
   }
 
   function applyWingStyle(div, wing) {
@@ -149,27 +260,27 @@
     enableSoundButton.style.display = "none";
 
     try {
-      // PRIME: must be triggered by user gesture
+      // iOS/Safari audio unlock
       dingHere.pause();
       dingHere.currentTime = 0;
-
-      await dingHere.play();  //unlocks audio on IOS
-      dingHere.pause();       // stop immediately
+      await dingHere.play();
+      dingHere.pause();
       dingHere.currentTime = 0;
-      
-      console.log ("Audio primed OK");
+      console.log("Audio primed OK");
     } catch (err) {
-      console.warn ("Audio prime failed:", err);
+      console.warn("Audio prime failed:", err);
     }
   });
 
-  function showLoading(show) {
-    document.getElementById("loadingOverlay").style.display = show ? "flex" : "none";
-  }
-
+  /***************
+   * AUTH
+   ***************/
   async function signIn() {
     try {
-      const loginResponse = await msalInstance.loginPopup({ scopes: ["User.Read", "Sites.Read.All", "Sites.FullControl.All"] });
+      const loginResponse = await msalInstance.loginPopup({
+        scopes: ["User.Read", "Sites.Read.All", "Sites.FullControl.All"]
+      });
+
       msalInstance.setActiveAccount(loginResponse.account);
       const account = msalInstance.getActiveAccount();
       if (!account) throw new Error("No active account found after login");
@@ -180,97 +291,162 @@
       });
 
       accessToken = tokenResponse.accessToken;
+
       document.getElementById("login").style.display = "none";
       enableSoundButton.style.display = "block";
       document.getElementById("board").style.display = "flex";
       resetButton.style.display = "block";
-      await loadListData();
 
+      setStatus("ok", "Connected.");
+      await refreshNow(true);
+
+      startPolling();
     } catch (error) {
       console.error("Login error:", error);
+      alert("Login failed. Open console (F12) for details.");
     }
   }
 
-  async function loadListData() {
-    if (!accessToken) return;
-    showLoading(true);
-    try {
-      // ✅ Added Modified so we can sort "Here" by most recently updated (i.e., moved into Here)
-      const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items?$select=Id,Title,Status,Wing,Modified`;
-      const response = await fetch(endpoint, {
-        headers: { "Authorization": `Bearer ${accessToken}`, "Accept": "application/json;odata=nometadata" }
-      });
-      if (!response.ok) throw new Error(`SharePoint API error: ${response.status}`);
-      const data = await response.json();
+  /***************
+   * LOADING + BACKOFF
+   ***************/
+  function startPolling() {
+    stopPolling();
+    pollTimer = setInterval(async () => {
+      if (!accessToken) return;
+      if (isSaving) return; // don't overwrite UI mid-save
+      await refreshNow(false);
+    }, backoffMs);
+  }
 
-      const buses = data.value.map(item => ({
-        id: item.Id,
-        name: item.Title,
-        status: item.Status || "Not Here",
-        wing: item.Wing || "Unassigned",
-        modified: item.Modified ? new Date(item.Modified).getTime() : 0
-      }));
+  function stopPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+  }
+
+  function bumpBackoffOnFailure() {
+    backoffMs = Math.min(BACKOFF_MAX, Math.max(BACKOFF_MIN, Math.floor(backoffMs * 1.8)));
+    startPolling();
+  }
+
+  function resetBackoffOnSuccess() {
+    backoffMs = BACKOFF_MIN;
+    startPolling();
+  }
+
+  async function refreshNow(showOverlay) {
+    if (!accessToken) return;
+    if (isSaving) return;
+
+    if (showOverlay) showLoading(true, "Refreshing bus list…");
+    try {
+      const buses = await fetchBusesFromSharePoint();
+
+      // Online again
+      offline = false;
+      resetBackoffOnSuccess();
+
+      // If we have pending saves, do NOT immediately overwrite the UI with server data
+      // that might be "older than our intent". Instead:
+      // 1) keep local busesState
+      // 2) retry pending saves
+      if (pendingSaves.size > 0) {
+        setStatus("warn", `Reconnected. ${pendingSaves.size} unsaved change(s) pending — retrying…`, true);
+        // Update previousStatuses snapshot for sound/flash baseline (server snapshot)
+        previousStatuses = {};
+        for (const b of buses) previousStatuses[b.id] = b.status;
+        initialized = true;
+
+        // Try to push pending updates, then do a fresh refresh after
+        await retryPendingSaves();
+        // If all pending cleared, then apply server truth
+        if (pendingSaves.size === 0) {
+          busesState = buses;
+          render(busesState, previousStatuses);
+          setStatus("ok", "Re-synced with SharePoint.");
+          setTimeout(clearStatusIfClean, 1500);
+        }
+        return;
+      }
+
+      // Normal path: adopt server as truth
+      busesState = buses;
+
+      // Sound/flash compare to previousStatuses
+      const oldMap = { ...previousStatuses };
 
       if (initialized && soundEnabled) {
-        for (const bus of buses) {
-          const oldStatus = previousStatuses[bus.id];
+        for (const bus of busesState) {
+          const oldStatus = oldMap[bus.id];
           const newStatus = bus.status;
-          if (oldStatus && oldStatus !== newStatus) {
-            if (newStatus === "Here") {
-              dingHere.pause();
-              dingHere.currentTime = 0;
-              dingHere.play().catch(()=>{});
-            }
+          if (oldStatus && oldStatus !== newStatus && newStatus === "Here") {
+            dingHere.pause(); dingHere.currentTime = 0;
+            dingHere.play().catch(()=>{});
           }
         }
       }
 
       previousStatuses = {};
-      for (const bus of buses) previousStatuses[bus.id] = bus.status;
+      for (const b of busesState) previousStatuses[b.id] = b.status;
 
       initialized = true;
-      render(buses);
-    } catch (error) {
-      console.error("Error loading list data:", error);
+      render(busesState, oldMap);
+
+      setStatus("ok", "Connected.");
+      setTimeout(clearStatusIfClean, 1200);
+
+    } catch (err) {
+      console.warn("Refresh failed:", err);
+      offline = true;
+      setStatus("offline", `Connection issue — showing last known board. Will retry in ~${Math.round(backoffMs/1000)}s.`, pendingSaves.size > 0);
+      bumpBackoffOnFailure();
+      // IMPORTANT: Do not re-render from stale/empty data here.
+      // We keep whatever is on-screen.
     } finally {
-      showLoading(false);
+      if (showOverlay) showLoading(false);
     }
   }
 
-  function render(buses) {
-    // ✅ Gone removed
+  async function fetchBusesFromSharePoint() {
+    const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items?$select=Id,Title,Status,Wing,Modified`;
+    const response = await fetch(endpoint, {
+      headers: {
+        "Authorization": `Bearer ${accessToken}`,
+        "Accept": "application/json;odata=nometadata"
+      }
+    });
+    if (!response.ok) throw new Error(`SharePoint API error: ${response.status}`);
+    const data = await response.json();
+
+    return data.value.map(item => ({
+      id: item.Id,
+      name: item.Title,
+      status: item.Status || "Not Here",
+      wing: item.Wing || "Unassigned",
+      modified: item.Modified ? new Date(item.Modified).getTime() : 0
+    }));
+  }
+
+  /***************
+   * RENDER
+   ***************/
+  function render(buses, oldMap = {}) {
     ["Not Here","Here"].forEach(status => {
       const col = document.getElementById(status);
       col.querySelectorAll(".bus").forEach(b => b.remove());
 
       let sorted;
-
       if (status === "Here") {
-        // ✅ Newest moved/updated buses at the top
         sorted = buses
           .filter(b => b.status === "Here")
-          .sort((a, b) => {
-            const timeDiff = (b.modified || 0) - (a.modified || 0);
-            if (timeDiff !== 0) return timeDiff;
-
-            // tie-breaker by name
-            return (a.name || "").localeCompare((b.name || ""), undefined, {
-              numeric: true,
-              sensitivity: "base"
-            });
-          });
+          .sort((a, b) => (b.modified || 0) - (a.modified || 0));
       } else {
-        // ✅ Not Here keeps wing grouping + name sort
         sorted = buses
           .filter(b => b.status === "Not Here")
           .sort((a, b) => {
             const wingDiff = wingRank(a.wing) - wingRank(b.wing);
             if (wingDiff !== 0) return wingDiff;
-
-            return (a.name || "").localeCompare((b.name || ""), undefined, {
-              numeric: true,
-              sensitivity: "base"
-            });
+            return (a.name || "").localeCompare((b.name || ""), undefined, { numeric:true, sensitivity:"base" });
           });
       }
 
@@ -281,6 +457,11 @@
         div.dataset.id = bus.id;
 
         applyWingStyle(div, bus.wing);
+
+        // show pending outline if this bus has an unsaved change
+        if (pendingSaves.has(String(bus.id))) {
+          div.classList.add("pending");
+        }
 
         div.innerHTML = `
           <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
@@ -296,7 +477,7 @@
           </div>
         `;
 
-        const oldStatus = previousStatuses[bus.id];
+        const oldStatus = oldMap[bus.id];
         if (initialized && oldStatus && oldStatus !== bus.status) {
           div.classList.add("flash");
           div.addEventListener("animationend", () => div.classList.remove("flash"));
@@ -317,28 +498,112 @@
       col.ondrop = async e => {
         e.preventDefault();
         const id = e.dataTransfer.getData("text/plain");
-        const bus = buses.find(b => b.id == id);
+        const bus = busesState.find(b => String(b.id) === String(id));
         if (!bus) return;
-        if (bus.status === col.id) return;
 
-        // ✅ Only possible columns now are Not Here and Here
-        bus.status = col.id;
-        render(buses);
+        const targetStatus = col.id; // "Not Here" or "Here"
+        if (!["Not Here","Here"].includes(targetStatus)) return;
+        if (bus.status === targetStatus) return;
 
-        if (soundEnabled && bus.status === "Here") {
+        // Optimistic UI update
+        bus.status = targetStatus;
+        bus.modified = Date.now();
+        pendingSaves.set(String(bus.id), { desiredStatus: targetStatus, updatedAt: Date.now() });
+
+        // render immediately and mark pending
+        render(busesState, previousStatuses);
+
+        // audio immediately on manual move to Here
+        if (soundEnabled && targetStatus === "Here") {
           dingHere.pause();
           dingHere.currentTime = 0;
-          dingHere.play().catch(err => console.warn("Audio play blocked:", err));
+          dingHere.play().catch(()=>{});
         }
 
-        await updateListItem(bus);
-        await loadListData();
+        // Attempt save
+        await saveBusStatus(bus.id, targetStatus);
       };
     });
   }
 
-  async function updateListItem(bus) {
-    const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items(${bus.id})`;
+  /***************
+   * SAVE + RETRY
+   ***************/
+  async function saveBusStatus(busId, status) {
+    if (!accessToken) return;
+    isSaving = true;
+    setStatus("saving", "Saving change to SharePoint…");
+
+    try {
+      await updateListItem(busId, { Status: status });
+      // success: clear pending for this bus
+      pendingSaves.delete(String(busId));
+      offline = false;
+      setStatus("ok", pendingSaves.size ? `${pendingSaves.size} pending change(s) remaining.` : "Saved.");
+      setTimeout(clearStatusIfClean, 1200);
+
+      // After saving, do a refresh to reconcile with server truth
+      isSaving = false;
+      await refreshNow(false);
+      return;
+
+    } catch (err) {
+      console.warn("Save failed:", err);
+      offline = true;
+      setStatus("offline", "Offline — change not saved. We’ll retry when connection returns.", true);
+
+      // Keep UI as-is (optimistic), do NOT refresh from server
+      // Increase backoff & keep polling slower
+      bumpBackoffOnFailure();
+
+    } finally {
+      isSaving = false;
+    }
+  }
+
+  async function retryPendingSaves() {
+    if (!accessToken) return;
+    if (pendingSaves.size === 0) return;
+
+    // avoid parallel saving
+    if (isSaving) return;
+
+    isSaving = true;
+    setStatus("saving", `Retrying ${pendingSaves.size} pending save(s)…`, true);
+
+    try {
+      // retry in stable order (oldest first)
+      const entries = Array.from(pendingSaves.entries())
+        .sort((a,b) => (a[1].updatedAt || 0) - (b[1].updatedAt || 0));
+
+      for (const [id, info] of entries) {
+        await updateListItem(id, { Status: info.desiredStatus });
+        pendingSaves.delete(String(id));
+      }
+
+      offline = false;
+      setStatus("ok", "Pending changes saved. Re-synced with SharePoint.");
+      setTimeout(clearStatusIfClean, 1500);
+
+    } catch (err) {
+      console.warn("Retry pending failed:", err);
+      offline = true;
+      setStatus("offline", "Still offline — pending changes not saved yet.", true);
+      bumpBackoffOnFailure();
+    } finally {
+      isSaving = false;
+    }
+  }
+
+  async function manualRetry() {
+    await retryPendingSaves();
+    if (!offline && pendingSaves.size === 0) {
+      await refreshNow(false);
+    }
+  }
+
+  async function updateListItem(id, bodyObj) {
+    const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items(${id})`;
     const response = await fetch(endpoint, {
       method:"PATCH",
       headers:{
@@ -347,56 +612,74 @@
         "Content-Type":"application/json;odata=nometadata",
         "IF-MATCH":"*"
       },
-      body: JSON.stringify({Status: bus.status})
+      body: JSON.stringify(bodyObj)
     });
-    if(!response.ok) console.error("Update failed:", await response.text());
+    if(!response.ok) {
+      const txt = await response.text().catch(()=>"(no body)");
+      throw new Error(`Update failed ${response.status}: ${txt}`);
+    }
   }
 
-  setInterval(async ()=>{
-    const account = msalInstance.getActiveAccount();
-    if(account && accessToken) await loadListData();
-  }, 15000);
-
-  /* ✅ SIMPLIFIED RESET BOARD FUNCTION */
+  /***************
+   * RESET
+   ***************/
   resetButton.addEventListener("click", async () => {
     if (!confirm("Are you sure you want to reset all buses to 'Not Here'?")) return;
+
+    // If offline or pending, warn
+    if (offline || pendingSaves.size > 0) {
+      const ok = confirm("You appear offline or have pending unsaved changes. Reset may not save. Continue anyway?");
+      if (!ok) return;
+    }
+
     try {
-      showLoading(true);
+      showLoading(true, "Resetting…");
+      isSaving = true;
+      setStatus("saving", "Resetting buses to Not Here…");
+
       const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items?$select=Id`;
       const response = await fetch(endpoint, {
-        headers: {
-          "Authorization": `Bearer ${accessToken}`,
-          "Accept": "application/json;odata=nometadata"
-        }
+        headers: { "Authorization": `Bearer ${accessToken}`, "Accept": "application/json;odata=nometadata" }
       });
+      if (!response.ok) throw new Error(`SharePoint API error: ${response.status}`);
       const data = await response.json();
-      const buses = data.value;
 
-      for (const bus of buses) {
-        const updateEndpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items(${bus.Id})`;
-        const updateResponse = await fetch(updateEndpoint, {
-          method: "PATCH",
-          headers: {
-            "Authorization": `Bearer ${accessToken}`,
-            "Accept": "application/json;odata=nometadata",
-            "Content-Type": "application/json;odata=nometadata",
-            "IF-MATCH": "*"
-          },
-          body: JSON.stringify({ Status: "Not Here" })
-        });
-        if (!updateResponse.ok) console.warn(`Failed to reset bus ${bus.Id}`);
+      for (const item of data.value) {
+        await updateListItem(item.Id, { Status: "Not Here" });
       }
 
-      alert("✅ All buses have been reset to 'Not Here'.");
-      window.location.reload();
+      pendingSaves.clear();
+      setStatus("ok", "Reset complete.");
+      await refreshNow(false);
+
     } catch (error) {
-      console.error("Error resetting board:", error);
-      alert("❌ Something went wrong while resetting the board. Check console for details.");
+      console.error("Reset failed:", error);
+      offline = true;
+      setStatus("offline", "Reset failed (likely offline). Board may be out of sync.", true);
+      bumpBackoffOnFailure();
     } finally {
+      isSaving = false;
       showLoading(false);
     }
   });
+
+  /***************
+   * ONLINE EVENTS
+   ***************/
+  window.addEventListener("online", async () => {
+    // Browser thinks we're back online; attempt resync
+    if (!accessToken) return;
+    setStatus("warn", "Connection restored — syncing…", pendingSaves.size > 0);
+    await refreshNow(false);
+  });
+
+  window.addEventListener("offline", () => {
+    offline = true;
+    setStatus("offline", "No internet connection — showing last known board.", pendingSaves.size > 0);
+  });
+
+  // Initial hint (hidden once stable)
+  setStatus("warn", "Sign in to load the board.");
   </script>
 </body>
 </html>
-
