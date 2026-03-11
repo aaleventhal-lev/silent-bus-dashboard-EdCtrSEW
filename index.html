@@ -177,6 +177,7 @@
   let accessToken = null;
 
   let soundEnabled = false;
+  let audioNeedsReprime = false;
   let initialized = false;
 
   // last known server status snapshot (for flash/sound comparisons)
@@ -255,20 +256,81 @@
     div.style.borderLeft = `10px solid ${style.border}`;
   }
 
-  enableSoundButton.addEventListener("click", async () => {
-    soundEnabled = true;
-    enableSoundButton.style.display = "none";
+  /***************
+   * AUDIO
+   ***************/
+  async function primeAudio() {
+    dingHere.pause();
+    dingHere.currentTime = 0;
+    await dingHere.play();
+    dingHere.pause();
+    dingHere.currentTime = 0;
+  }
+
+  async function tryReprimeAudio() {
+    if (!soundEnabled || !audioNeedsReprime) return;
 
     try {
-      // iOS/Safari audio unlock
+      await primeAudio();
+      audioNeedsReprime = false;
+      enableSoundButton.style.display = "none";
+      console.log("Audio re-primed successfully");
+    } catch (err) {
+      soundEnabled = false;
+      audioNeedsReprime = true;
+      enableSoundButton.style.display = "block";
+      console.warn("Audio re-prime failed:", err);
+    }
+  }
+
+  async function playDingHere() {
+    if (!soundEnabled) return;
+
+    try {
       dingHere.pause();
       dingHere.currentTime = 0;
       await dingHere.play();
-      dingHere.pause();
-      dingHere.currentTime = 0;
+    } catch (err) {
+      console.warn("Sound playback failed:", err);
+      soundEnabled = false;
+      audioNeedsReprime = true;
+      enableSoundButton.style.display = "block";
+    }
+  }
+
+  enableSoundButton.addEventListener("click", async () => {
+    try {
+      await primeAudio();
+      soundEnabled = true;
+      audioNeedsReprime = false;
+      enableSoundButton.style.display = "none";
       console.log("Audio primed OK");
     } catch (err) {
+      soundEnabled = false;
+      audioNeedsReprime = true;
+      enableSoundButton.style.display = "block";
       console.warn("Audio prime failed:", err);
+      alert("Sound could not be enabled. Please tap again.");
+    }
+  });
+
+  document.addEventListener("click", () => {
+    tryReprimeAudio();
+  });
+
+  document.addEventListener("touchstart", () => {
+    tryReprimeAudio();
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && soundEnabled) {
+      audioNeedsReprime = true;
+    }
+  });
+
+  window.addEventListener("focus", () => {
+    if (soundEnabled) {
+      audioNeedsReprime = true;
     }
   });
 
@@ -380,8 +442,7 @@
           const oldStatus = oldMap[bus.id];
           const newStatus = bus.status;
           if (oldStatus && oldStatus !== newStatus && newStatus === "Here") {
-            dingHere.pause(); dingHere.currentTime = 0;
-            dingHere.play().catch(()=>{});
+            await playDingHere();
           }
         }
       }
@@ -515,9 +576,7 @@
 
         // audio immediately on manual move to Here
         if (soundEnabled && targetStatus === "Here") {
-          dingHere.pause();
-          dingHere.currentTime = 0;
-          dingHere.play().catch(()=>{});
+          await playDingHere();
         }
 
         // Attempt save
