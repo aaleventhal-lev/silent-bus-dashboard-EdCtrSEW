@@ -6,8 +6,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <script src="https://alcdn.msauth.net/browser/2.37.0/js/msal-browser.min.js"></script>
   <style>
-    body { font-family: system-ui, "Segoe UI", Arial; background:#f1f5f9; margin:20px; }
-    h1 { text-align:center; margin: 6px 0 10px; }
+    body { font-family: system-ui, "Segoe UI", Arial; background:#f1f5f9; margin:14px; }
+    h1 { text-align:center; margin: 6px 0 6px; }
+    .subhead { text-align:center; color:#475569; margin:0 0 12px; font-size:0.95em; }
 
     /* Status banner */
     #statusBar {
@@ -46,9 +47,19 @@
     }
     #retryBtn:hover { background:#1e40af; }
 
-    #board { display:flex; gap:16px; margin-top:12px; max-width: 980px; margin-left:auto; margin-right:auto; }
-    .column { flex:1; background:white; border-radius:10px; padding:12px; min-height:400px; box-shadow:0 1px 4px rgba(0,0,0,0.08); }
+    #topControls { display:flex; justify-content:center; gap:10px; flex-wrap:wrap; margin:10px 0; }
+    #login { margin:0; }
+    .topRow { display:flex; gap:14px; align-items:stretch; }
+    .panel { background:white; border-radius:12px; box-shadow:0 1px 4px rgba(0,0,0,0.08); padding:10px; }
+    #busPanel { flex:1 1 64%; min-width:520px; }
+    #pickupPanel { flex:0 0 36%; min-width:360px; }
+    .panelTitle { display:flex; justify-content:space-between; align-items:center; margin:2px 2px 10px; }
+    .panelTitle h2 { margin:0; font-size:1.05em; }
+    .panelHint { color:#64748b; font-size:0.9em; }
+    .board { display:flex; gap:10px; align-items:stretch; }
+    .column { flex:1; background:white; border-radius:10px; padding:12px; min-height:400px; border:1px solid #e2e8f0; }
     .column h2 { text-align:center; margin: 2px 0 10px; }
+    .column h3 { text-align:center; margin:2px 0 10px; font-size:0.95em; }
 
     /* Bus tile */
     .bus {
@@ -69,6 +80,51 @@
       outline-offset: 2px;
     }
 
+    .student {
+      background:#fff7ed;
+      margin:6px 0;
+      padding:8px 10px;
+      border-radius:10px;
+      cursor:grab;
+      user-select:none;
+      line-height:1.2;
+      word-break:break-word;
+    }
+    .student.dragging { opacity:0.5; transform:scale(1.03); }
+    .spotsGrid { display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin-top:6px; }
+    .spotCol {
+      min-height:78px;
+      padding:8px;
+      border-radius:12px;
+      border:1px solid #e2e8f0;
+      background:#f8fafc;
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      justify-content:flex-start;
+    }
+    .spotHeader { width:100%; display:flex; justify-content:center; margin-bottom:6px; }
+    .spotBadge {
+      display:inline-block;
+      font-weight:700;
+      padding:3px 10px;
+      border-radius:999px;
+      background:#e2e8f0;
+      color:#0f172a;
+      font-size:0.9em;
+    }
+    .spotCol .student { margin:0; width:calc(100% - 20px); text-align:center; }
+    .spotEmpty {
+      color:#94a3b8;
+      font-size:0.85em;
+      text-align:center;
+      width:100%;
+      padding:6px 0;
+      border-radius:10px;
+      border:1px dashed #cbd5e1;
+      background:rgba(255,255,255,0.6);
+    }
+
     button { padding:8px 16px; border:none; border-radius:6px; background:#2563eb; color:white; cursor:pointer; }
     button:hover { background:#1e40af; }
     #login { display:flex; justify-content:center; margin:20px; }
@@ -80,6 +136,8 @@
       background-color:#c0392b;
     }
     #resetBoardBtn:hover { background-color:#922b21; }
+    #resetPickupBtn { display:none; background:#b45309; }
+    #resetPickupBtn:hover { background:#92400e; }
 
     /* Loading overlay */
     #loadingOverlay {
@@ -106,11 +164,18 @@
 
     @keyframes flash { 0% { background-color: #fff59d; } 100% { background-color: inherit; } }
     .flash { animation: flash 0.9s ease; }
+
+    @media (max-width: 1100px) {
+      .topRow { flex-direction:column; }
+      #busPanel, #pickupPanel { flex:1 1 auto; min-width:unset; }
+      .spotsGrid { grid-template-columns:repeat(2, 1fr); }
+    }
   </style>
 </head>
 
 <body>
   <h1>Silent Bus Dashboard — Ed Center Sewickley (Live)</h1>
+  <div id="dashboardSubhead" class="subhead">Buses + Parent Pickups</div>
 
   <div id="statusBar">
     <div class="row">
@@ -122,13 +187,40 @@
     </div>
   </div>
 
-  <div id="login"><button id="signInBtn" onclick="signIn()">Sign in with Microsoft</button></div>
-  <button id="enableSound">Enable Sound</button>
-  <button id="resetBoardBtn">🔄 Reset Board</button>
+  <div id="topControls">
+    <div id="login"><button id="signInBtn" onclick="signIn()">Sign in with Microsoft</button></div>
+    <button id="enableSound">Enable Sound</button>
+    <button id="resetBoardBtn">🔄 Reset Buses</button>
+    <button id="resetPickupBtn">🔄 Reset Parent Pickup</button>
+  </div>
 
-  <div id="board" style="display:none;">
-    <div class="column" id="Not Here"><h2>🚍 Not Here</h2></div>
-    <div class="column" id="Here"><h2>✅ Here</h2></div>
+  <div class="topRow">
+    <div id="busPanel" class="panel" style="display:none;">
+      <div class="panelTitle">
+        <h2>🚌 Bus Board</h2>
+        <div class="panelHint">Drag buses between columns</div>
+      </div>
+      <div id="busBoard" class="board">
+        <div class="column" id="Not Here"><h3>🚍 Not Here</h3></div>
+        <div class="column" id="Here"><h3>✅ Here</h3></div>
+      </div>
+    </div>
+
+    <div id="pickupPanel" class="panel" style="display:none;">
+      <div class="panelTitle">
+        <h2>👨‍👩‍👧 Parent Pickup</h2>
+        <div class="panelHint">Drop replaces current spot</div>
+      </div>
+      <div class="board">
+        <div class="column pickupDropzone" id="PP-Waiting">
+          <h3>📋 Waiting</h3>
+        </div>
+        <div class="column" style="flex:1;">
+          <h3>🚗 Spots</h3>
+          <div id="spotsGrid" class="spotsGrid"></div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- 🎵 Sounds -->
@@ -155,6 +247,11 @@
 
   const siteUrl = "https://thewatsoninstitute.sharepoint.com/sites/EdCenterSewickleyStaffResourceHub";
   const listName = "SEW Silent Bus Admin List";
+  const pickupListName = "SEW Parent Pickup Board";
+  const parkingSpots = [
+    "1","2","3","4","5","6","7","8","9",
+    "10","11","12","13","14","15","16","17","18"
+  ];
 
   // Wing styles + order
   const wingStyles = {
@@ -185,6 +282,7 @@
 
   // local working set used for rendering (can diverge while offline)
   let busesState = [];
+  let pickupsState = [];
 
   // prevents refresh overwriting UI during a save
   let isSaving = false;
@@ -205,11 +303,35 @@
   const dingHere = document.getElementById("dingHere");
   const enableSoundButton = document.getElementById("enableSound");
   const resetButton = document.getElementById("resetBoardBtn");
+  const resetPickupButton = document.getElementById("resetPickupBtn");
 
   const statusBar = document.getElementById("statusBar");
   const statusPill = document.getElementById("statusPill");
   const statusMsg = document.getElementById("statusMsg");
   const retryBtn = document.getElementById("retryBtn");
+
+  function buildParkingSpots() {
+    const grid = document.getElementById("spotsGrid");
+    grid.textContent = "";
+    for (const spot of parkingSpots) {
+      const spotCol = document.createElement("div");
+      spotCol.className = "spotCol pickupDropzone";
+      spotCol.id = `SPOT-${spot}`;
+
+      const header = document.createElement("div");
+      header.className = "spotHeader";
+      const badge = document.createElement("span");
+      badge.className = "spotBadge";
+      badge.textContent = spot;
+      header.appendChild(badge);
+      spotCol.appendChild(header);
+      grid.appendChild(spotCol);
+    }
+    document.getElementById("dashboardSubhead").textContent =
+      `Buses + Parent Pickups (Parking Spots ${parkingSpots.join(", ")})`;
+  }
+
+  buildParkingSpots();
 
   function showLoading(show, text="Refreshing…") {
     const overlay = document.getElementById("loadingOverlay");
@@ -356,8 +478,10 @@
 
       document.getElementById("login").style.display = "none";
       enableSoundButton.style.display = "block";
-      document.getElementById("board").style.display = "flex";
+      document.getElementById("busPanel").style.display = "block";
+      document.getElementById("pickupPanel").style.display = "block";
       resetButton.style.display = "block";
+      resetPickupButton.style.display = "block";
 
       setStatus("ok", "Connected.");
       await refreshNow(true);
@@ -400,9 +524,14 @@
     if (!accessToken) return;
     if (isSaving) return;
 
-    if (showOverlay) showLoading(true, "Refreshing bus list…");
+    if (showOverlay) showLoading(true, "Refreshing dashboard…");
     try {
-      const buses = await fetchBusesFromSharePoint();
+      const [buses, pickups] = await Promise.all([
+        fetchBusesFromSharePoint(),
+        fetchPickupsFromSharePoint()
+      ]);
+      pickupsState = pickups;
+      renderPickups(pickupsState);
 
       // Online again
       offline = false;
@@ -488,6 +617,26 @@
     }));
   }
 
+  async function fetchPickupsFromSharePoint() {
+    const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${pickupListName}')/items?$select=Id,Title,Status,Spot,Modified`;
+    const response = await fetch(endpoint, {
+      headers: {
+        "Authorization": `Bearer ${accessToken}`,
+        "Accept": "application/json;odata=nometadata"
+      }
+    });
+    if (!response.ok) throw new Error(`Parent pickup SharePoint API error: ${response.status}`);
+    const data = await response.json();
+
+    return data.value.map(item => ({
+      id: item.Id,
+      name: item.Title,
+      status: item.Status || "Waiting",
+      spot: item.Spot || null,
+      modified: item.Modified ? new Date(item.Modified).getTime() : 0
+    }));
+  }
+
   /***************
    * RENDER
    ***************/
@@ -554,7 +703,7 @@
       });
     });
 
-    document.querySelectorAll(".column").forEach(col => {
+    document.querySelectorAll("#busBoard .column").forEach(col => {
       col.ondragover = e => e.preventDefault();
       col.ondrop = async e => {
         e.preventDefault();
@@ -581,6 +730,101 @@
 
         // Attempt save
         await saveBusStatus(bus.id, targetStatus);
+      };
+    });
+  }
+
+  function clearPickupTiles(container) {
+    container.querySelectorAll(".student, .spotEmpty").forEach(el => el.remove());
+  }
+
+  function makeStudentTile(student) {
+    const div = document.createElement("div");
+    div.className = "student";
+    div.textContent = student.name;
+    div.draggable = true;
+    div.dataset.id = student.id;
+
+    div.addEventListener("dragstart", e => {
+      e.dataTransfer.setData("application/x-parent-pickup", String(student.id));
+      div.classList.add("dragging");
+    });
+    div.addEventListener("dragend", () => div.classList.remove("dragging"));
+    return div;
+  }
+
+  function renderPickups(students) {
+    const waitingCol = document.getElementById("PP-Waiting");
+    clearPickupTiles(waitingCol);
+    for (const spot of parkingSpots) {
+      clearPickupTiles(document.getElementById(`SPOT-${spot}`));
+    }
+
+    students
+      .filter(student => !student.spot)
+      .sort((a, b) => (a.name || "").localeCompare((b.name || ""), undefined, { sensitivity:"base" }))
+      .forEach(student => waitingCol.appendChild(makeStudentTile(student)));
+
+    for (const spot of parkingSpots) {
+      const spotCol = document.getElementById(`SPOT-${spot}`);
+      const occupant = students.find(student => String(student.spot) === String(spot));
+      if (occupant) {
+        spotCol.appendChild(makeStudentTile(occupant));
+      } else {
+        const empty = document.createElement("div");
+        empty.className = "spotEmpty";
+        empty.textContent = "Empty";
+        spotCol.appendChild(empty);
+      }
+    }
+
+    document.querySelectorAll(".pickupDropzone").forEach(zone => {
+      zone.ondragover = e => {
+        if (e.dataTransfer.types.includes("application/x-parent-pickup")) e.preventDefault();
+      };
+      zone.ondrop = async e => {
+        const studentId = e.dataTransfer.getData("application/x-parent-pickup");
+        if (!studentId) return;
+        e.preventDefault();
+
+        const student = pickupsState.find(item => String(item.id) === String(studentId));
+        if (!student) return;
+
+        const destination = zone.id === "PP-Waiting" ? null : zone.id.replace("SPOT-", "");
+        if (destination !== null && !parkingSpots.includes(String(destination))) return;
+        if (String(student.spot || "") === String(destination || "")) return;
+
+        const previousSpot = student.spot;
+        const displacedStudent = destination === null
+          ? null
+          : pickupsState.find(item => String(item.spot) === String(destination) && String(item.id) !== String(student.id));
+        const displacedPreviousSpot = displacedStudent ? displacedStudent.spot : null;
+
+        if (displacedStudent) displacedStudent.spot = null;
+        student.spot = destination;
+        student.status = "Waiting";
+        renderPickups(pickupsState);
+
+        isSaving = true;
+        setStatus("saving", "Saving parent pickup change…");
+        try {
+          if (displacedStudent) {
+            await updatePickupItem(displacedStudent.id, { Spot:null, Status:"Waiting" });
+          }
+          await updatePickupItem(student.id, { Spot:destination, Status:"Waiting" });
+          offline = false;
+          setStatus("ok", "Parent pickup change saved.");
+          setTimeout(clearStatusIfClean, 1200);
+        } catch (error) {
+          console.error("Parent pickup save failed:", error);
+          student.spot = previousSpot;
+          if (displacedStudent) displacedStudent.spot = displacedPreviousSpot;
+          renderPickups(pickupsState);
+          offline = true;
+          setStatus("offline", "Parent pickup change was not saved; the board was restored. Check the connection and try again.", false);
+        } finally {
+          isSaving = false;
+        }
       };
     });
   }
@@ -679,6 +923,24 @@
     }
   }
 
+  async function updatePickupItem(id, bodyObj) {
+    const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${pickupListName}')/items(${id})`;
+    const response = await fetch(endpoint, {
+      method:"PATCH",
+      headers:{
+        "Authorization":`Bearer ${accessToken}`,
+        "Accept":"application/json;odata=nometadata",
+        "Content-Type":"application/json;odata=nometadata",
+        "IF-MATCH":"*"
+      },
+      body:JSON.stringify(bodyObj)
+    });
+    if (!response.ok) {
+      const txt = await response.text().catch(() => "(no body)");
+      throw new Error(`Parent pickup update failed ${response.status}: ${txt}`);
+    }
+  }
+
   /***************
    * RESET
    ***************/
@@ -716,6 +978,46 @@
       offline = true;
       setStatus("offline", "Reset failed (likely offline). Board may be out of sync.", true);
       bumpBackoffOnFailure();
+    } finally {
+      isSaving = false;
+      showLoading(false);
+    }
+  });
+
+  resetPickupButton.addEventListener("click", async () => {
+    if (!confirm("Reset Parent Pickup? This will move every student back to Waiting.")) return;
+
+    try {
+      showLoading(true, "Resetting parent pickup…");
+      isSaving = true;
+      setStatus("saving", "Moving all parent-pickup students back to Waiting…");
+
+      const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${pickupListName}')/items?$select=Id&$top=5000`;
+      const response = await fetch(endpoint, {
+        headers:{
+          "Authorization":`Bearer ${accessToken}`,
+          "Accept":"application/json;odata=nometadata"
+        }
+      });
+      if (!response.ok) throw new Error(`Parent pickup SharePoint API error: ${response.status}`);
+      const data = await response.json();
+
+      for (const item of data.value) {
+        await updatePickupItem(item.Id, { Spot:null, Status:"Waiting" });
+      }
+
+      pickupsState.forEach(student => {
+        student.spot = null;
+        student.status = "Waiting";
+      });
+      renderPickups(pickupsState);
+      offline = false;
+      setStatus("ok", "Parent pickup reset complete.");
+      setTimeout(clearStatusIfClean, 1200);
+    } catch (error) {
+      console.error("Parent pickup reset failed:", error);
+      offline = true;
+      setStatus("offline", "Parent pickup reset failed. No on-screen reset was applied.", false);
     } finally {
       isSaving = false;
       showLoading(false);
