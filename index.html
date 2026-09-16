@@ -314,7 +314,7 @@
   const siteUrl = "https://thewatsoninstitute.sharepoint.com/sites/EdCenterSewickleyStaffResourceHub";
   const listName = "SEW Silent Bus Admin List";
   const pickupListName = "EdCtrSEW Parent Pickup Board";
-  const dashboardVersion = "2026-09-16-parent-pickup-v7";
+  const dashboardVersion = "2026-09-16-parent-pickup-v8";
   const parkingSpots = [
     "1","2","3","4","5","6","7","8","9",
     "10","11","12","13","14","15","16","17","18"
@@ -887,6 +887,12 @@
         student.spot = destination;
         student.status = "Waiting";
         renderPickups(pickupsState);
+
+        // Match the bus behavior: sound immediately when a student enters a spot.
+        // Moving a student back to Waiting remains silent.
+        if (soundEnabled && destination !== null) {
+          await playDingHere();
+        }
 
         isSaving = true;
         setStatus("saving", "Saving parent pickup change…");
