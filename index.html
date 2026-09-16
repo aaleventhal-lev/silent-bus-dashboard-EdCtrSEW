@@ -54,22 +54,22 @@
       display:flex;
       justify-content:center;
       align-items:center;
-      gap:14px;
+      gap:10px;
       flex-wrap:nowrap;
-      margin:18px auto;
+      margin:12px auto 16px;
       width:100%;
     }
     #topControls button {
       margin:0;
-      padding:10px 20px;
-      border-radius:10px;
-      font-size:1em;
+      padding:8px 16px;
+      border-radius:8px;
+      font-size:0.92em;
     }
     #login { margin:0; }
     .topRow { display:flex; gap:14px; align-items:stretch; }
     .panel { background:white; border-radius:12px; box-shadow:0 1px 4px rgba(0,0,0,0.08); padding:10px; }
-    #busPanel { flex:1 1 64%; min-width:520px; }
-    #pickupPanel { flex:0 0 36%; min-width:360px; }
+    #busPanel { flex:1 1 61%; min-width:500px; }
+    #pickupPanel { flex:0 0 39%; min-width:390px; }
     .panelTitle { display:flex; justify-content:space-between; align-items:center; margin:2px 2px 10px; }
     .panelTitle h2 { margin:0; font-size:1.05em; }
     .panelHint { color:#64748b; font-size:0.9em; }
@@ -77,6 +77,13 @@
     .column { flex:1; background:white; border-radius:10px; padding:12px; min-height:400px; border:1px solid #e2e8f0; }
     .column h2 { text-align:center; margin: 2px 0 10px; }
     .column h3 { text-align:center; margin:2px 0 10px; font-size:0.95em; }
+
+    /* Let each bus column end shortly after its final bus while remaining droppable. */
+    #busBoard { align-items:flex-start; }
+    #busBoard .column {
+      min-height:90px;
+      height:auto;
+    }
 
     /* Bus tile */
     .bus {
@@ -151,14 +158,18 @@
 
     /* Keep parking spots visible while the long student list scrolls independently. */
     #pickupBoard {
-      height:560px;
-      min-height:560px;
-      align-items:stretch;
+      height:auto;
+      min-height:0;
+      align-items:flex-start;
     }
     #PP-Waiting {
       flex:0 0 36%;
       min-height:0;
-      height:auto;
+      height:fit-content;
+      max-height:520px;
+      align-self:flex-start;
+      box-sizing:border-box;
+      padding:0 12px 12px;
       overflow-y:auto;
       overscroll-behavior:contain;
       scrollbar-gutter:stable;
@@ -172,11 +183,13 @@
     #PP-Waiting h3 {
       position:sticky;
       top:0;
-      z-index:3;
-      margin:0 0 8px;
-      padding:8px 0 10px;
+      z-index:10;
+      margin:0 -12px 8px;
+      padding:12px 12px 10px;
       background:#ffffff;
+      border-radius:10px 10px 0 0;
       border-bottom:1px solid #e2e8f0;
+      box-shadow:0 2px 2px rgba(255,255,255,0.98);
     }
 
     button { padding:8px 16px; border:none; border-radius:6px; background:#2563eb; color:white; cursor:pointer; }
@@ -301,7 +314,7 @@
   const siteUrl = "https://thewatsoninstitute.sharepoint.com/sites/EdCenterSewickleyStaffResourceHub";
   const listName = "SEW Silent Bus Admin List";
   const pickupListName = "EdCtrSEW Parent Pickup Board";
-  const dashboardVersion = "2026-09-16-parent-pickup-v6";
+  const dashboardVersion = "2026-09-16-parent-pickup-v7";
   const parkingSpots = [
     "1","2","3","4","5","6","7","8","9",
     "10","11","12","13","14","15","16","17","18"
