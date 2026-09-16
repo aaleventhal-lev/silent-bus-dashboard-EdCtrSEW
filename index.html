@@ -2,6 +2,9 @@
 <html>
 <head>
   <meta charset="utf-8">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
   <title>Silent Bus Dashboard - Ed Center Sewickley (Live)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <script src="https://alcdn.msauth.net/browser/2.37.0/js/msal-browser.min.js"></script>
@@ -47,7 +50,21 @@
     }
     #retryBtn:hover { background:#1e40af; }
 
-    #topControls { display:flex; justify-content:center; gap:10px; flex-wrap:wrap; margin:10px 0; }
+    #topControls {
+      display:flex;
+      justify-content:center;
+      align-items:center;
+      gap:14px;
+      flex-wrap:nowrap;
+      margin:18px auto;
+      width:100%;
+    }
+    #topControls button {
+      margin:0;
+      padding:10px 20px;
+      border-radius:10px;
+      font-size:1em;
+    }
     #login { margin:0; }
     .topRow { display:flex; gap:14px; align-items:stretch; }
     .panel { background:white; border-radius:12px; box-shadow:0 1px 4px rgba(0,0,0,0.08); padding:10px; }
@@ -95,6 +112,7 @@
     .spotCol {
       min-height:78px;
       padding:8px;
+      box-sizing:border-box;
       border-radius:12px;
       border:1px solid #e2e8f0;
       background:#f8fafc;
@@ -125,14 +143,38 @@
       background:rgba(255,255,255,0.6);
     }
 
+    /* Keep parking spots visible while the long student list scrolls independently. */
+    #pickupBoard {
+      height:min(620px, calc(100vh - 250px));
+      min-height:460px;
+      align-items:stretch;
+    }
+    #PP-Waiting,
+    #pickupSpotsColumn {
+      min-height:0;
+      height:auto;
+      overflow-y:auto;
+      overscroll-behavior:contain;
+      scrollbar-gutter:stable;
+    }
+    #PP-Waiting h3,
+    #pickupSpotsColumn > h3 {
+      position:sticky;
+      top:0;
+      z-index:3;
+      margin:0 0 8px;
+      padding:8px 0 10px;
+      background:#ffffff;
+      border-bottom:1px solid #e2e8f0;
+    }
+
     button { padding:8px 16px; border:none; border-radius:6px; background:#2563eb; color:white; cursor:pointer; }
     button:hover { background:#1e40af; }
     #login { display:flex; justify-content:center; margin:20px; }
-    #enableSound { display:none; margin:10px auto; }
+    #enableSound { display:none; }
 
     #resetBoardBtn {
       display:none;
-      margin:10px auto;
       background-color:#c0392b;
     }
     #resetBoardBtn:hover { background-color:#922b21; }
@@ -209,13 +251,13 @@
     <div id="pickupPanel" class="panel" style="display:none;">
       <div class="panelTitle">
         <h2>👨‍👩‍👧 Parent Pickup</h2>
-        <div class="panelHint">Drop replaces current spot</div>
+        <div class="panelHint">Scroll Waiting, then drag to a spot</div>
       </div>
-      <div class="board">
+      <div id="pickupBoard" class="board">
         <div class="column pickupDropzone" id="PP-Waiting">
           <h3>📋 Waiting</h3>
         </div>
-        <div class="column" style="flex:1;">
+        <div id="pickupSpotsColumn" class="column" style="flex:1;">
           <h3>🚗 Spots</h3>
           <div id="spotsGrid" class="spotsGrid"></div>
         </div>
@@ -248,6 +290,7 @@
   const siteUrl = "https://thewatsoninstitute.sharepoint.com/sites/EdCenterSewickleyStaffResourceHub";
   const listName = "SEW Silent Bus Admin List";
   const pickupListName = "EdCtrSEW Parent Pickup Board";
+  const dashboardVersion = "2026-09-16-parent-pickup-v5";
   const parkingSpots = [
     "1","2","3","4","5","6","7","8","9",
     "10","11","12","13","14","15","16","17","18"
@@ -333,6 +376,7 @@
   }
 
   buildParkingSpots();
+  console.info(`Silent Bus Dashboard version: ${dashboardVersion}`);
 
   function showLoading(show, text="Refreshing…") {
     const overlay = document.getElementById("loadingOverlay");
