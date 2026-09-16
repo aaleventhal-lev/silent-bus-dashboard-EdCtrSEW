@@ -247,7 +247,7 @@
 
   const siteUrl = "https://thewatsoninstitute.sharepoint.com/sites/EdCenterSewickleyStaffResourceHub";
   const listName = "SEW Silent Bus Admin List";
-  const pickupListName = "SEW Parent Pickup Board";
+  const pickupListName = "EdCtrSEW Parent Pickup Board";
   const parkingSpots = [
     "1","2","3","4","5","6","7","8","9",
     "10","11","12","13","14","15","16","17","18"
@@ -283,6 +283,7 @@
   // local working set used for rendering (can diverge while offline)
   let busesState = [];
   let pickupsState = [];
+  let pickupLoadWarning = null;
 
   // prevents refresh overwriting UI during a save
   let isSaving = false;
@@ -328,7 +329,7 @@
       grid.appendChild(spotCol);
     }
     document.getElementById("dashboardSubhead").textContent =
-      `Buses + Parent Pickups (Parking Spots ${parkingSpots.join(", ")})`;
+      "Buses + Parent Pickups (Parking Spots 1-18)";
   }
 
   buildParkingSpots();
@@ -367,7 +368,7 @@
 
   function clearStatusIfClean() {
     // Hide banner when everything is normal & no pending
-    if (!offline && !isSaving && pendingSaves.size === 0) {
+    if (!offline && !isSaving && pendingSaves.size === 0 && !pickupLoadWarning) {
       statusBar.style.display = "none";
     }
   }
@@ -526,12 +527,18 @@
 
     if (showOverlay) showLoading(true, "Refreshing dashboard…");
     try {
-      const [buses, pickups] = await Promise.all([
-        fetchBusesFromSharePoint(),
-        fetchPickupsFromSharePoint()
-      ]);
-      pickupsState = pickups;
-      renderPickups(pickupsState);
+      const buses = await fetchBusesFromSharePoint();
+
+      try {
+        pickupsState = await fetchPickupsFromSharePoint();
+        pickupLoadWarning = null;
+        renderPickups(pickupsState);
+      } catch (pickupError) {
+        console.warn("Parent pickup refresh failed:", pickupError);
+        pickupLoadWarning =
+          `Bus board connected, but Parent Pickup could not load from the SharePoint list "${pickupListName}". ` +
+          "Verify the exact list name and the Status and Spot column internal names.";
+      }
 
       // Online again
       offline = false;
@@ -554,8 +561,12 @@
         if (pendingSaves.size === 0) {
           busesState = buses;
           render(busesState, previousStatuses);
-          setStatus("ok", "Re-synced with SharePoint.");
-          setTimeout(clearStatusIfClean, 1500);
+          if (pickupLoadWarning) {
+            setStatus("warn", pickupLoadWarning);
+          } else {
+            setStatus("ok", "Re-synced with SharePoint.");
+            setTimeout(clearStatusIfClean, 1500);
+          }
         }
         return;
       }
@@ -582,8 +593,12 @@
       initialized = true;
       render(busesState, oldMap);
 
-      setStatus("ok", "Connected.");
-      setTimeout(clearStatusIfClean, 1200);
+      if (pickupLoadWarning) {
+        setStatus("warn", pickupLoadWarning);
+      } else {
+        setStatus("ok", "Connected.");
+        setTimeout(clearStatusIfClean, 1200);
+      }
 
     } catch (err) {
       console.warn("Refresh failed:", err);
