@@ -78,8 +78,8 @@
     .column h2 { text-align:center; margin: 2px 0 10px; }
     .column h3 { text-align:center; margin:2px 0 10px; font-size:0.95em; }
 
-    /* Let each bus column end shortly after its final bus while remaining droppable. */
-    #busBoard { align-items:flex-start; }
+    /* Match both bus-column heights so the full Here column remains droppable. */
+    #busBoard { align-items:stretch; }
     #busBoard .column {
       min-height:90px;
       height:auto;
@@ -314,7 +314,7 @@
   const siteUrl = "https://thewatsoninstitute.sharepoint.com/sites/EdCenterSewickleyStaffResourceHub";
   const listName = "SEW Silent Bus Admin List";
   const pickupListName = "EdCtrSEW Parent Pickup Board";
-  const dashboardVersion = "2026-09-16-parent-pickup-v8";
+  const dashboardVersion = "2026-09-17-parent-pickup-v9";
   const parkingSpots = [
     "1","2","3","4","5","6","7","8","9",
     "10","11","12","13","14","15","16","17","18"
