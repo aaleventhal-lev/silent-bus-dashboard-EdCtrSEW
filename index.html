@@ -320,7 +320,7 @@
   const siteUrl = "https://thewatsoninstitute.sharepoint.com/sites/EdCenterSewickleyStaffResourceHub";
   const listName = "SEW Silent Bus Admin List";
   const pickupListName = "EdCtrSEW Parent Pickup Board";
-  const dashboardVersion = "2026-10-06-reliable-sync-v10";
+  const dashboardVersion = "2026-10-06-reliable-sync-v11";
   const parkingSpots = [
     "1","2","3","4","5","6","7","8","9",
     "10","11","12","13","14","15","16","17","18"
@@ -551,12 +551,18 @@
   }
   function notice(key, text) {
     notices.set(key, text);
+    renderNotices();
+  }
+  function clearNotice(key) {
+    if (notices.delete(key)) renderNotices();
+  }
+  function renderNotices() {
     const area = document.getElementById("noticeArea");
     area.textContent = "";
     for (const [id, message] of notices) {
       const row = document.createElement("div"); row.textContent = message + " ";
       const dismiss = document.createElement("button"); dismiss.textContent = "Dismiss";
-      dismiss.onclick = () => { notices.delete(id); row.remove(); };
+      dismiss.onclick = () => clearNotice(id);
       row.appendChild(dismiss); area.appendChild(row);
     }
   }
@@ -771,7 +777,7 @@
       setStatus("offline",authRequired ? "Microsoft sign-in is required to reconnect. Unshared moves expire after two minutes." :
         "Cannot reach SharePoint—classroom screens may be out of date. Unshared moves retry automatically for up to two minutes.",true);
     } finally {
-      busy=false; isSaving=false; updateSyncInfo(); render(busesState); renderPickups(pickupsState);
+      busy=false; isSaving=false; clearNotice("busy"); updateSyncInfo(); render(busesState); renderPickups(pickupsState);
       if (showOverlay) showLoading(false);
       void flushLogs();
     }
@@ -789,7 +795,7 @@
       pendingSaves.delete(key);
     }
     if (bus.status===target) return;
-    notices.delete(`bus-${key}`);
+    clearNotice(`bus-${key}`);
     pendingSaves.set(key,{bus:{...bus},baseStatus:bus.status,desiredStatus:target,etag:bus.etag,
       resetToken:bus.resetToken,deadline:Date.now()+RETRY_WINDOW_MS,nextAttempt:0,expired:false});
     logEvent("Bus drag","Pending",bus,bus.status,target);
@@ -869,7 +875,7 @@
     } catch(error) {
       notice("pickup","Parent pickup save could not be confirmed. Refreshing the shared board; a multi-student move may have partially saved.");
       logEvent("Parent pickup move","Unconfirmed",null,"","",error.message);
-    } finally {busy=false;isSaving=false;await refreshNow(false);}
+    } finally {busy=false;isSaving=false;clearNotice("busy");await refreshNow(false);}
   }
   async function resetBoard(pickup=false) {
     if (busy) return;
@@ -898,7 +904,7 @@
     } catch(error) {
       notice("reset",`Reset stopped after ${completed} items. It may be partial; check the shared board before trying again.`);
       logEvent(pickup ? "Parent pickup reset" : "Bus reset","Partial or failed",null,"","",`${completed} items updated. ${error.message}`);
-    } finally {busy=false;isSaving=false;showLoading(false);await refreshNow(false);}
+    } finally {busy=false;isSaving=false;clearNotice("busy");showLoading(false);await refreshNow(false);}
   }
   resetButton.addEventListener("click",()=>resetBoard(false));
   resetPickupButton.addEventListener("click",()=>resetBoard(true));
