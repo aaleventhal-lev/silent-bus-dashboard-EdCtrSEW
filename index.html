@@ -9,6 +9,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <script src="https://alcdn.msauth.net/browser/2.37.0/js/msal-browser.min.js"></script>
   <style>
+    .busHeading {display:flex;justify-content:space-between;align-items:center;gap:10px;}
+    .busName {min-width:0;overflow-wrap:anywhere;}
+    .busLocation {flex-shrink:0;background:#fff;color:#0f172a;border:1px solid rgba(15,23,42,0.12);border-radius:6px;padding:3px 8px;font-size:0.8em;font-weight:600;text-align:center;}
     #noticeArea {max-width:980px;margin:8px auto;color:#9a3412;}
     .pendingLabel {display:block;font-size:0.8em;font-weight:700;color:#92400e;margin-top:5px;}
     button:disabled {opacity:0.5;cursor:wait;}
@@ -320,7 +323,7 @@
   const siteUrl = "https://thewatsoninstitute.sharepoint.com/sites/EdCenterSewickleyStaffResourceHub";
   const listName = "SEW Silent Bus Admin List";
   const pickupListName = "EdCtrSEW Parent Pickup Board";
-  const dashboardVersion = "2026-10-06-reliable-sync-v11";
+  const dashboardVersion = "2026-10-06-reliable-sync-v12";
   const parkingSpots = [
     "1","2","3","4","5","6","7","8","9",
     "10","11","12","13","14","15","16","17","18"
@@ -812,9 +815,10 @@
       for (const bus of sorted) {
         const div=document.createElement("div"); div.className="bus"; div.draggable=!busy;
         applyWingStyle(div,bus.wing);
-        const name=document.createElement("span"); name.textContent=bus.name;
-        const wing=document.createElement("small"); wing.textContent=" · "+bus.wing;
-        div.append(name,wing);
+        const heading=document.createElement("div"); heading.className="busHeading";
+        const name=document.createElement("span"); name.className="busName"; name.textContent=bus.name;
+        const wing=document.createElement("span"); wing.className="busLocation"; wing.textContent=bus.wing;
+        heading.append(name,wing); div.appendChild(heading);
         const pending=pendingSaves.get(String(bus.id));
         if (pending) {
           div.classList.add("pending");
