@@ -9,6 +9,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <script src="https://alcdn.msauth.net/browser/2.37.0/js/msal-browser.min.js"></script>
   <style>
+    #noticeArea {max-width:980px;margin:8px auto;color:#9a3412;}
+    .pendingLabel {display:block;font-size:0.8em;font-weight:700;color:#92400e;margin-top:5px;}
+    button:disabled {opacity:0.5;cursor:wait;}
     body { font-family: system-ui, "Segoe UI", Arial; background:#f1f5f9; margin:14px; }
     h1 { text-align:center; margin: 6px 0 6px; }
     .subhead { text-align:center; color:#475569; margin:0 0 12px; font-size:0.95em; }
@@ -249,10 +252,13 @@
         <span id="statusPill">Status</span>
         <span id="statusMsg"></span>
       </div>
-      <button id="retryBtn" onclick="manualRetry()">Retry pending saves</button>
+      <button id="retryBtn" onclick="manualRetry()">Refresh connection</button>
     </div>
   </div>
 
+  <div id="syncInfo" class="subhead">Buses last synced: never · Parent pickup last synced: never</div>
+  <div id="noticeArea" role="alert"></div>
+  <div id="diagnosticNotice" class="subhead"></div>
   <div id="topControls">
     <div id="login"><button id="signInBtn" onclick="signIn()">Sign in with Microsoft</button></div>
     <button id="enableSound">Enable Sound</button>
@@ -314,7 +320,7 @@
   const siteUrl = "https://thewatsoninstitute.sharepoint.com/sites/EdCenterSewickleyStaffResourceHub";
   const listName = "SEW Silent Bus Admin List";
   const pickupListName = "EdCtrSEW Parent Pickup Board";
-  const dashboardVersion = "2026-09-17-parent-pickup-v9";
+  const dashboardVersion = "2026-10-06-reliable-sync-v10";
   const parkingSpots = [
     "1","2","3","4","5","6","7","8","9",
     "10","11","12","13","14","15","16","17","18"
@@ -435,8 +441,8 @@
   }
 
   function clearStatusIfClean() {
-    // Hide banner when everything is normal & no pending
-    if (!offline && !isSaving && pendingSaves.size === 0 && !pickupLoadWarning) {
+    // Preserve warnings while changes are unshared.
+    if (!offline && !isSaving && pendingSaves.size === 0 && !pickupLoadWarning && !authRequired) {
       statusBar.style.display = "none";
     }
   }
@@ -525,611 +531,383 @@
     }
   });
 
-  /***************
-   * AUTH
-   ***************/
-  async function signIn() {
-    try {
-      const loginResponse = await msalInstance.loginPopup({
-        scopes: ["User.Read", "Sites.Read.All", "Sites.FullControl.All"]
-      });
 
-      msalInstance.setActiveAccount(loginResponse.account);
+  const activityListName = "Silent Bus Activity Log";
+  const RETRY_WINDOW_MS = 120000;
+  const POLL_MS = 5000;
+  const scopes = ["https://thewatsoninstitute.sharepoint.com/.default"];
+  const sessionId = crypto.randomUUID();
+  let signedIn = false, busy = false, authRequired = false;
+  let busSyncedAt = null, pickupSyncedAt = null;
+  let logQueue = [], loggingBusy = false;
+  const notices = new Map();
+  const timeLabel = d => d ? new Intl.DateTimeFormat("en-US", {
+    timeZone:"America/New_York", hour:"numeric", minute:"2-digit", second:"2-digit"
+  }).format(d) + " ET" : "never";
+
+  function updateSyncInfo() {
+    document.getElementById("syncInfo").textContent =
+      `Buses last synced: ${timeLabel(busSyncedAt)} · Parent pickup last synced: ${timeLabel(pickupSyncedAt)}`;
+  }
+  function notice(key, text) {
+    notices.set(key, text);
+    const area = document.getElementById("noticeArea");
+    area.textContent = "";
+    for (const [id, message] of notices) {
+      const row = document.createElement("div"); row.textContent = message + " ";
+      const dismiss = document.createElement("button"); dismiss.textContent = "Dismiss";
+      dismiss.onclick = () => { notices.delete(id); row.remove(); };
+      row.appendChild(dismiss); area.appendChild(row);
+    }
+  }
+  function logEvent(action, result, bus = null, previous = "", requested = "", detail = "") {
+    const entry = { Title:action, EventTime:new Date().toISOString(), Action:action,
+      Result:result, BusName:bus?.name || "", BusItemID:bus ? String(bus.id) : "",
+      PreviousStatus:previous, RequestedStatus:requested, DashboardSession:sessionId,
+      DashboardVersion:dashboardVersion, UserEmail:msalInstance.getActiveAccount()?.username || "",
+      Details:String(detail).slice(0,2000) };
+    console.info("Silent Bus event", entry);
+    if (logQueue.length >= 200) {
+      logQueue.shift();
+      document.getElementById("diagnosticNotice").textContent = "Some diagnostics could not be retained; bus changes are unaffected.";
+    }
+    logQueue.push(entry);
+  }
+  async function getValidAccessToken(forceRefresh = false) {
+    try {
       const account = msalInstance.getActiveAccount();
-      if (!account) throw new Error("No active account found after login");
-
-      const tokenResponse = await msalInstance.acquireTokenSilent({
-        scopes: ["https://thewatsoninstitute.sharepoint.com/.default"],
-        account
-      });
-
-      accessToken = tokenResponse.accessToken;
-
-      document.getElementById("login").style.display = "none";
-      enableSoundButton.style.display = "block";
-      document.getElementById("busPanel").style.display = "block";
-      document.getElementById("pickupPanel").style.display = "block";
-      resetButton.style.display = "block";
-      resetPickupButton.style.display = "block";
-
-      setStatus("ok", "Connected.");
-      await refreshNow(true);
-
-      startPolling();
+      if (!account) throw new Error("Sign in with Microsoft to reconnect.");
+      const response = await msalInstance.acquireTokenSilent({scopes, account, forceRefresh});
+      accessToken = response.accessToken; authRequired = false;
+      return accessToken;
     } catch (error) {
-      console.error("Login error:", error);
-      alert("Login failed. Open console (F12) for details.");
+      if (error instanceof msal.InteractionRequiredAuthError || !msalInstance.getActiveAccount()) {
+        authRequired = true; document.getElementById("login").style.display = "flex";
+        document.getElementById("signInBtn").textContent = "Reconnect Microsoft account";
+      }
+      throw error;
     }
   }
-
-  /***************
-   * LOADING + BACKOFF
-   ***************/
+  async function request(url, options = {}) {
+    // Refresh tokens through MSAL for every request. Only replay a rejected 401.
+    for (let attempt=0; attempt<2; attempt++) {
+      const token = await getValidAccessToken(attempt === 1);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      let response;
+      try { response = await fetch(url, {...options, cache:"no-store", signal:controller.signal,
+        headers:{Accept:"application/json;odata=verbose", ...options.headers, Authorization:`Bearer ${token}`}}); }
+      finally { clearTimeout(timer); }
+      if (response.status === 401 && attempt === 0) continue;
+      if (!response.ok) {
+        const error = new Error(`SharePoint request failed (HTTP ${response.status}).`);
+        error.status = response.status; throw error;
+      }
+      return response;
+    }
+  }
+  const listEndpoint = name => `${siteUrl}/_api/web/lists/GetByTitle('${name.replace(/'/g,"''")}')/items`;
+  const busSelect = "Id,Title,Status,Wing,Modified,ResetToken";
+  const pickupSelect = "Id,Title,Status,Spot,Modified";
+  function mapBus(i) {
+    return {id:i.Id,name:i.Title,status:i.Status || "Not Here",wing:i.Wing || "Unassigned",
+      modified:Date.parse(i.Modified)||0,etag:i.__metadata?.etag,resetToken:i.ResetToken || ""};
+  }
+  function mapPickup(i) {
+    return {id:i.Id,name:i.Title,status:i.Status || "Waiting",spot:i.Spot || null,
+      modified:Date.parse(i.Modified)||0,etag:i.__metadata?.etag};
+  }
+  async function getItems(name, fields, mapper) {
+    let url = `${listEndpoint(name)}?$select=${fields}&$top=5000`, items=[];
+    while (url) {
+      const data = await (await request(url)).json();
+      items.push(...data.d.results.map(mapper)); url=data.d.__next || null;
+    }
+    return items;
+  }
+  async function getBus(id) {
+    return mapBus((await (await request(`${listEndpoint(listName)}(${Number(id)})?$select=${busSelect}`)).json()).d);
+  }
+  async function patch(name,id,body,etag) {
+    if (!etag || etag === "*") throw new Error("Missing item version; refresh before changing this item.");
+    return request(`${listEndpoint(name)}(${Number(id)})`, {method:"PATCH",
+      headers:{Accept:"application/json;odata=nometadata", "Content-Type":"application/json;odata=nometadata","IF-MATCH":etag},
+      body:JSON.stringify(body)});
+  }
+  async function flushLogs() {
+    if (loggingBusy || !signedIn || !logQueue.length) return;
+    loggingBusy=true;
+    try {
+      // Limit per cycle so diagnostics never monopolize connection recovery.
+      for (let n=0; n<5 && logQueue.length; n++) {
+        await request(listEndpoint(activityListName), {method:"POST",
+          headers:{"Content-Type":"application/json;odata=nometadata",Accept:"application/json;odata=nometadata"},
+          body:JSON.stringify(logQueue[0])});
+        logQueue.shift();
+      }
+      document.getElementById("diagnosticNotice").textContent = logQueue.length ? "Diagnostics waiting to upload." : "";
+    } catch (error) {
+      document.getElementById("diagnosticNotice").textContent =
+        "Diagnostics could not upload. Check the activity list and permissions; bus changes are unaffected.";
+    } finally { loggingBusy=false; }
+  }
+  async function signIn() {
+    if (busy) return;
+    try {
+      const response = await msalInstance.loginPopup({scopes});
+      msalInstance.setActiveAccount(response.account); await getValidAccessToken();
+      signedIn=true;
+      document.getElementById("login").style.display="none";
+      for (const id of ["busPanel","pickupPanel","resetBoardBtn","resetPickupBtn"]) document.getElementById(id).style.display="block";
+      if (!soundEnabled) enableSoundButton.style.display="block";
+      logEvent("Sign in","Success");
+      startPolling(); await refreshNow(true);
+    } catch (error) { setStatus("warn","Microsoft connection could not be established. Please try signing in again."); }
+  }
   function startPolling() {
-    stopPolling();
-    pollTimer = setInterval(async () => {
-      if (!accessToken) return;
-      if (isSaving) return; // don't overwrite UI mid-save
-      await refreshNow(false);
-    }, backoffMs);
+    clearInterval(pollTimer);
+    pollTimer=setInterval(() => refreshNow(false), POLL_MS);
   }
-
-  function stopPolling() {
-    if (pollTimer) clearInterval(pollTimer);
-    pollTimer = null;
+  function expirePending() {
+    for (const [id,p] of pendingSaves) {
+      if (!p.expired && Date.now() >= p.deadline) {
+        p.expired=true;
+        logEvent("Bus move","Expired",p.bus,p.baseStatus,p.desiredStatus,"Two-minute retry window ended; no further writes.");
+        notice(`bus-${id}`,`${p.bus.name}: ${p.desiredStatus} could not be shared within two minutes. Contact staff directly or make a new move after reconnecting.`);
+      }
+    }
   }
-
-  function bumpBackoffOnFailure() {
-    backoffMs = Math.min(BACKOFF_MAX, Math.max(BACKOFF_MIN, Math.floor(backoffMs * 1.8)));
-    startPolling();
+  // This local timer labels expired moves even during a slow network request.
+  setInterval(() => {
+    const before=[...pendingSaves.values()].filter(p=>p.expired).length;
+    expirePending();
+    if ([...pendingSaves.values()].filter(p=>p.expired).length !== before) render(busesState);
+  },1000);
+  function retryable(error) {
+    return !error.status || [401,408,429,500,502,503,504].includes(error.status);
   }
-
-  function resetBackoffOnSuccess() {
-    backoffMs = BACKOFF_MIN;
-    startPolling();
+  function reconcilePending(p, current) {
+    if (current.resetToken !== p.resetToken) return "Reset superseded this offline move";
+    if (current.status === p.desiredStatus) return "Already shared";
+    if (current.etag !== p.etag) return "A newer update superseded this offline move";
+    return "Write";
   }
-
-  async function refreshNow(showOverlay) {
-    if (!accessToken) return;
-    if (isSaving) return;
-
-    if (showOverlay) showLoading(true, "Refreshing dashboard…");
-    try {
-      const buses = await fetchBusesFromSharePoint();
-
+  async function processPending() {
+    for (const [id,p] of pendingSaves) {
+      if (p.expired || Date.now() >= p.deadline) { expirePending(); continue; }
+      if (p.nextAttempt > Date.now()) continue;
       try {
-        pickupsState = await fetchPickupsFromSharePoint();
-        pickupLoadWarning = null;
-        renderPickups(pickupsState);
-      } catch (pickupError) {
-        console.warn("Parent pickup refresh failed:", pickupError);
-        pickupLoadWarning =
-          `Bus board connected, but Parent Pickup could not load from the SharePoint list "${pickupListName}". ` +
-          "Verify the exact list name and the Status and Spot column internal names.";
-      }
-
-      // Online again
-      offline = false;
-      resetBackoffOnSuccess();
-
-      // If we have pending saves, do NOT immediately overwrite the UI with server data
-      // that might be "older than our intent". Instead:
-      // 1) keep local busesState
-      // 2) retry pending saves
-      if (pendingSaves.size > 0) {
-        setStatus("warn", `Reconnected. ${pendingSaves.size} unsaved change(s) pending — retrying…`, true);
-        // Update previousStatuses snapshot for sound/flash baseline (server snapshot)
-        previousStatuses = {};
-        for (const b of buses) previousStatuses[b.id] = b.status;
-        initialized = true;
-
-        // Try to push pending updates, then do a fresh refresh after
-        await retryPendingSaves();
-        // If all pending cleared, then apply server truth
-        if (pendingSaves.size === 0) {
-          busesState = buses;
-          render(busesState, previousStatuses);
-          if (pickupLoadWarning) {
-            setStatus("warn", pickupLoadWarning);
-          } else {
-            setStatus("ok", "Re-synced with SharePoint.");
-            setTimeout(clearStatusIfClean, 1500);
-          }
+        const current=await getBus(id);
+        // Time can expire during the GET/token renewal; never start an expired write.
+        if (Date.now() >= p.deadline) { expirePending(); continue; }
+        const decision=reconcilePending(p,current);
+        if (decision === "Write") {
+          logEvent("Bus save attempt","Attempt",p.bus,p.baseStatus,p.desiredStatus);
+          await patch(listName,id,{Status:p.desiredStatus},p.etag);
+          pendingSaves.delete(id);
+          const local=busesState.find(b=>String(b.id)===id);
+          if(local){local.status=p.desiredStatus;local.modified=Date.now();local.etag=null;}
+          logEvent("Bus move","Saved",p.bus,p.baseStatus,p.desiredStatus);
+          // Maintain sound baseline immediately after an acknowledged write.
+          if (p.desiredStatus === "Here" && previousStatuses[id] !== "Here") void playDingHere();
+          previousStatuses[id]=p.desiredStatus;
+        } else {
+          pendingSaves.delete(id);
+          logEvent("Bus move",decision === "Already shared" ? "Already shared" : "Conflict",p.bus,p.baseStatus,p.desiredStatus,decision);
+          if (decision !== "Already shared") notice(`bus-${id}`,`${p.bus.name}: ${decision}. The shared status is ${current.status}.`);
         }
-        return;
-      }
-
-      // Normal path: adopt server as truth
-      busesState = buses;
-
-      // Sound/flash compare to previousStatuses
-      const oldMap = { ...previousStatuses };
-
-      if (initialized && soundEnabled) {
-        for (const bus of busesState) {
-          const oldStatus = oldMap[bus.id];
-          const newStatus = bus.status;
-          if (oldStatus && oldStatus !== newStatus && newStatus === "Here") {
-            await playDingHere();
-          }
+      } catch (error) {
+        if (error.status === 412) {
+          // Re-read next cycle: distinguish another Here write from a reset/conflict.
+          p.nextAttempt=Date.now()+1000;
+        } else if (!retryable(error)) {
+          p.expired=true;
+          notice(`bus-${id}`,`${p.bus.name}: change could not be shared (${error.message}). Check permissions or list setup.`);
+          logEvent("Bus move","Rejected",p.bus,p.baseStatus,p.desiredStatus,error.message);
+        } else {
+          p.nextAttempt=Date.now()+POLL_MS;
+          if (!p.failureLogged) { logEvent("Bus move","Save failed",p.bus,p.baseStatus,p.desiredStatus,error.message); p.failureLogged=true; }
         }
       }
-
-      previousStatuses = {};
-      for (const b of busesState) previousStatuses[b.id] = b.status;
-
-      initialized = true;
-      render(busesState, oldMap);
-
-      if (pickupLoadWarning) {
-        setStatus("warn", pickupLoadWarning);
-      } else {
-        setStatus("ok", "Connected.");
-        setTimeout(clearStatusIfClean, 1200);
+    }
+  }
+  async function refreshNow(showOverlay=false) {
+    if (!signedIn || busy) return;
+    busy=true; isSaving=true;
+    if (showOverlay) showLoading(true);
+    try {
+      expirePending();
+      await processPending();
+      // Always fetch AFTER pending writes, never render a pre-write snapshot.
+      const buses=await getItems(listName,busSelect,mapBus);
+      const oldMap={...previousStatuses};
+      busesState=buses; busSyncedAt=new Date();
+      for (const b of buses) {
+        if (initialized && oldMap[b.id] && oldMap[b.id] !== b.status && b.status === "Here") void playDingHere();
+        previousStatuses[b.id]=b.status;
+        const p=pendingSaves.get(String(b.id));
+        if (p?.expired) pendingSaves.delete(String(b.id));
       }
-
-    } catch (err) {
-      console.warn("Refresh failed:", err);
-      offline = true;
-      setStatus("offline", `Connection issue — showing last known board. Will retry in ~${Math.round(backoffMs/1000)}s.`, pendingSaves.size > 0);
-      bumpBackoffOnFailure();
-      // IMPORTANT: Do not re-render from stale/empty data here.
-      // We keep whatever is on-screen.
+      initialized=true; render(buses,oldMap);
+      try {
+        const pickups=await getItems(pickupListName,pickupSelect,mapPickup);
+        if (pickupSyncedAt) {
+          for (const student of pickups) {
+            const old=pickupsState.find(x=>x.id===student.id);
+            if (old && student.spot && String(old.spot||"") !== String(student.spot)) void playDingHere();
+          }
+        }
+        pickupsState=pickups; pickupSyncedAt=new Date(); pickupLoadWarning=null;
+        renderPickups(pickups);
+      } catch (error) { pickupLoadWarning="Parent Pickup could not refresh; showing its last confirmed board."; }
+      if (offline) logEvent("Connection","Restored");
+      offline=false;
+      const remaining=pendingSaves.size;
+      setStatus(remaining ? "warn" : pickupLoadWarning ? "warn" : "ok",
+        remaining ? `${remaining} bus change(s) NOT yet shared. Automatic retry is active for up to two minutes.` : pickupLoadWarning || "Connected. Changes are shared through SharePoint.",true);
+    } catch (error) {
+      if (!offline) logEvent("Connection","Unavailable",null,"","",error.message);
+      offline=true;
+      setStatus("offline",authRequired ? "Microsoft sign-in is required to reconnect. Unshared moves expire after two minutes." :
+        "Cannot reach SharePoint—classroom screens may be out of date. Unshared moves retry automatically for up to two minutes.",true);
     } finally {
+      busy=false; isSaving=false; updateSyncInfo(); render(busesState); renderPickups(pickupsState);
       if (showOverlay) showLoading(false);
+      void flushLogs();
     }
   }
-
-  async function fetchBusesFromSharePoint() {
-    const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items?$select=Id,Title,Status,Wing,Modified`;
-    const response = await fetch(endpoint, {
-      headers: {
-        "Authorization": `Bearer ${accessToken}`,
-        "Accept": "application/json;odata=nometadata"
-      }
-    });
-    if (!response.ok) throw new Error(`SharePoint API error: ${response.status}`);
-    const data = await response.json();
-
-    return data.value.map(item => ({
-      id: item.Id,
-      name: item.Title,
-      status: item.Status || "Not Here",
-      wing: item.Wing || "Unassigned",
-      modified: item.Modified ? new Date(item.Modified).getTime() : 0
-    }));
+  async function manualRetry() { await refreshNow(true); }
+  function moveBus(id,target) {
+    const bus=busesState.find(b=>String(b.id)===String(id));
+    if (!bus || !["Here","Not Here"].includes(target)) return;
+    if (busy) { notice("busy","A refresh or save is finishing. Please try the move again in a moment."); return; }
+    if (!bus.etag) { notice("version","Refresh the connection before changing this bus."); return; }
+    const key=String(id), existing=pendingSaves.get(key);
+    if (existing) {
+      if (target === bus.status) { pendingSaves.delete(key); logEvent("Bus move","Cancelled",bus,bus.status,target); render(busesState); return; }
+      if (!existing.expired) return;
+      pendingSaves.delete(key);
+    }
+    if (bus.status===target) return;
+    notices.delete(`bus-${key}`);
+    pendingSaves.set(key,{bus:{...bus},baseStatus:bus.status,desiredStatus:target,etag:bus.etag,
+      resetToken:bus.resetToken,deadline:Date.now()+RETRY_WINDOW_MS,nextAttempt:0,expired:false});
+    logEvent("Bus drag","Pending",bus,bus.status,target);
+    render(busesState); setStatus("saving","Saving bus change—arrival is not shared until confirmed.",true);
+    void refreshNow(false);
   }
-
-  async function fetchPickupsFromSharePoint() {
-    const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${pickupListName}')/items?$select=Id,Title,Status,Spot,Modified`;
-    const response = await fetch(endpoint, {
-      headers: {
-        "Authorization": `Bearer ${accessToken}`,
-        "Accept": "application/json;odata=nometadata"
-      }
-    });
-    if (!response.ok) throw new Error(`Parent pickup SharePoint API error: ${response.status}`);
-    const data = await response.json();
-
-    return data.value.map(item => ({
-      id: item.Id,
-      name: item.Title,
-      status: item.Status || "Waiting",
-      spot: item.Spot || null,
-      modified: item.Modified ? new Date(item.Modified).getTime() : 0
-    }));
-  }
-
-  /***************
-   * RENDER
-   ***************/
-  function render(buses, oldMap = {}) {
-    ["Not Here","Here"].forEach(status => {
-      const col = document.getElementById(status);
-      col.querySelectorAll(".bus").forEach(b => b.remove());
-
-      let sorted;
-      if (status === "Here") {
-        sorted = buses
-          .filter(b => b.status === "Here")
-          .sort((a, b) => (b.modified || 0) - (a.modified || 0));
-      } else {
-        sorted = buses
-          .filter(b => b.status === "Not Here")
-          .sort((a, b) => {
-            const wingDiff = wingRank(a.wing) - wingRank(b.wing);
-            if (wingDiff !== 0) return wingDiff;
-            return (a.name || "").localeCompare((b.name || ""), undefined, { numeric:true, sensitivity:"base" });
-          });
-      }
-
-      sorted.forEach(bus => {
-        const div = document.createElement("div");
-        div.className = "bus";
-        div.draggable = true;
-        div.dataset.id = bus.id;
-
-        applyWingStyle(div, bus.wing);
-
-        // show pending outline if this bus has an unsaved change
-        if (pendingSaves.has(String(bus.id))) {
+  function render(buses, oldMap={}) {
+    for (const status of ["Not Here","Here"]) {
+      const col=document.getElementById(status);
+      col.querySelectorAll(".bus").forEach(el=>el.remove());
+      const display=buses.map(b=>({...b,status:pendingSaves.get(String(b.id))?.desiredStatus || b.status}));
+      const sorted=display.filter(b=>b.status===status).sort((a,b)=>status === "Here" ? b.modified-a.modified :
+        wingRank(a.wing)-wingRank(b.wing) || (a.name||"").localeCompare(b.name||"",undefined,{numeric:true,sensitivity:"base"}));
+      for (const bus of sorted) {
+        const div=document.createElement("div"); div.className="bus"; div.draggable=!busy;
+        applyWingStyle(div,bus.wing);
+        const name=document.createElement("span"); name.textContent=bus.name;
+        const wing=document.createElement("small"); wing.textContent=" · "+bus.wing;
+        div.append(name,wing);
+        const pending=pendingSaves.get(String(bus.id));
+        if (pending) {
           div.classList.add("pending");
+          const label=document.createElement("span"); label.className="pendingLabel";
+          label.textContent=pending.expired ? "NOT SHARED—retry window ended" :
+            `${bus.status === "Here" ? "Arrival" : "Change"} not yet shared—saving…`;
+          div.appendChild(label);
+          const cancel=document.createElement("button"); cancel.textContent="Cancel local move";
+          cancel.disabled=busy;
+          cancel.onclick=()=>{pendingSaves.delete(String(bus.id));render(busesState);logEvent("Bus move","Cancelled",bus);};
+          div.appendChild(cancel);
         }
-
-        div.innerHTML = `
-          <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
-            <span>${bus.name}</span>
-            <span style="
-              font-size: 0.8em;
-              padding: 2px 8px;
-              border-radius: 999px;
-              background: rgba(255,255,255,0.65);
-              border: 1px solid rgba(0,0,0,0.10);
-              white-space: nowrap;
-            ">${bus.wing}</span>
-          </div>
-        `;
-
-        const oldStatus = oldMap[bus.id];
-        if (initialized && oldStatus && oldStatus !== bus.status) {
-          div.classList.add("flash");
-          div.addEventListener("animationend", () => div.classList.remove("flash"));
-        }
-
-        div.addEventListener("dragstart", e => {
-          e.dataTransfer.setData("text/plain", bus.id);
-          div.classList.add("dragging");
-        });
-        div.addEventListener("dragend", () => div.classList.remove("dragging"));
-
-        col.appendChild(div);
-      });
-    });
-
-    document.querySelectorAll("#busBoard .column").forEach(col => {
-      col.ondragover = e => e.preventDefault();
-      col.ondrop = async e => {
-        e.preventDefault();
-        const id = e.dataTransfer.getData("text/plain");
-        const bus = busesState.find(b => String(b.id) === String(id));
-        if (!bus) return;
-
-        const targetStatus = col.id; // "Not Here" or "Here"
-        if (!["Not Here","Here"].includes(targetStatus)) return;
-        if (bus.status === targetStatus) return;
-
-        // Optimistic UI update
-        bus.status = targetStatus;
-        bus.modified = Date.now();
-        pendingSaves.set(String(bus.id), { desiredStatus: targetStatus, updatedAt: Date.now() });
-
-        // render immediately and mark pending
-        render(busesState, previousStatuses);
-
-        // audio immediately on manual move to Here
-        if (soundEnabled && targetStatus === "Here") {
-          await playDingHere();
-        }
-
-        // Attempt save
-        await saveBusStatus(bus.id, targetStatus);
-      };
-    });
+        if (oldMap[bus.id] && oldMap[bus.id] !== bus.status && !pending) div.classList.add("flash");
+        div.ondragstart=e=>{e.dataTransfer.setData("application/x-silent-bus",String(bus.id));div.classList.add("dragging");};
+        div.ondragend=()=>div.classList.remove("dragging"); col.appendChild(div);
+      }
+      col.ondragover=e=>{if(e.dataTransfer.types.includes("application/x-silent-bus"))e.preventDefault();};
+      col.ondrop=e=>{e.preventDefault();moveBus(e.dataTransfer.getData("application/x-silent-bus"),status);};
+    }
   }
-
-  function clearPickupTiles(container) {
-    container.querySelectorAll(".student, .spotEmpty").forEach(el => el.remove());
-  }
-
-  function makeStudentTile(student) {
-    const div = document.createElement("div");
-    div.className = "student";
-    div.textContent = student.name;
-    div.draggable = true;
-    div.dataset.id = student.id;
-
-    div.addEventListener("dragstart", e => {
-      e.dataTransfer.setData("application/x-parent-pickup", String(student.id));
-      div.classList.add("dragging");
-    });
-    div.addEventListener("dragend", () => div.classList.remove("dragging"));
-    return div;
-  }
-
   function renderPickups(students) {
-    const waitingCol = document.getElementById("PP-Waiting");
-    clearPickupTiles(waitingCol);
-    for (const spot of parkingSpots) {
-      clearPickupTiles(document.getElementById(`SPOT-${spot}`));
+    document.querySelectorAll(".student,.spotEmpty").forEach(el=>el.remove());
+    for (const student of [...students].sort((a,b)=>(a.name||"").localeCompare(b.name||""))) {
+      const tile=document.createElement("div");tile.className="student";tile.textContent=student.name;tile.draggable=!busy;
+      tile.ondragstart=e=>{e.dataTransfer.setData("application/x-parent-pickup",String(student.id));tile.classList.add("dragging");};
+      tile.ondragend=()=>tile.classList.remove("dragging");
+      const spot=student.spot ? document.getElementById(`SPOT-${student.spot}`) : null;
+      (spot || document.getElementById("PP-Waiting")).appendChild(tile);
     }
-
-    students
-      .filter(student => !student.spot)
-      .sort((a, b) => (a.name || "").localeCompare((b.name || ""), undefined, { sensitivity:"base" }))
-      .forEach(student => waitingCol.appendChild(makeStudentTile(student)));
-
     for (const spot of parkingSpots) {
-      const spotCol = document.getElementById(`SPOT-${spot}`);
-      const occupant = students.find(student => String(student.spot) === String(spot));
-      if (occupant) {
-        spotCol.appendChild(makeStudentTile(occupant));
+      const col=document.getElementById(`SPOT-${spot}`);
+      if (!col.querySelector(".student")) {const empty=document.createElement("div");empty.className="spotEmpty";empty.textContent="Empty";col.appendChild(empty);}
+    }
+    document.querySelectorAll(".pickupDropzone").forEach(zone=>{
+      zone.ondragover=e=>{if(e.dataTransfer.types.includes("application/x-parent-pickup"))e.preventDefault();};
+      zone.ondrop=e=>{e.preventDefault();void movePickup(e.dataTransfer.getData("application/x-parent-pickup"),zone.id === "PP-Waiting" ? null : zone.id.replace("SPOT-",""));};
+    });
+  }
+  async function movePickup(id,destination) {
+    if (busy || !id) return;
+    const student=pickupsState.find(x=>String(x.id)===String(id));
+    if (!student || (destination && !parkingSpots.includes(destination)) || String(student.spot||"")===String(destination||"")) return;
+    busy=true;isSaving=true;setStatus("saving","Saving parent pickup change…");
+    // Keep the confirmed board until each write is acknowledged. No deferred pickup replay.
+    try {
+      const fresh=await getItems(pickupListName,pickupSelect,mapPickup);
+      const current=fresh.find(x=>x.id===student.id);
+      if (!current || current.etag!==student.etag) throw new Error("This student changed on another screen; refresh and try again.");
+      const occupant=destination ? fresh.find(x=>String(x.spot)===String(destination)&&x.id!==student.id) : null;
+      const oldOccupant=destination ? pickupsState.find(x=>String(x.spot)===String(destination)&&x.id!==student.id) : null;
+      if ((occupant?.id||null)!==(oldOccupant?.id||null) || (occupant && occupant.etag!==oldOccupant?.etag))
+        throw new Error("This parking spot changed on another screen; refresh and try again.");
+      if (occupant) await patch(pickupListName,occupant.id,{Spot:null,Status:"Waiting"},occupant.etag);
+      await patch(pickupListName,current.id,{Spot:destination,Status:"Waiting"},current.etag);
+      student.spot=destination;if(occupant){const local=pickupsState.find(x=>x.id===occupant.id);if(local)local.spot=null;}
+      if(destination)void playDingHere();
+      logEvent("Parent pickup move","Saved",null,"","","A parking assignment was saved.");
+    } catch(error) {
+      notice("pickup","Parent pickup save could not be confirmed. Refreshing the shared board; a multi-student move may have partially saved.");
+      logEvent("Parent pickup move","Unconfirmed",null,"","",error.message);
+    } finally {busy=false;isSaving=false;await refreshNow(false);}
+  }
+  async function resetBoard(pickup=false) {
+    if (busy) return;
+    if (!confirm(pickup ? "Move all parent-pickup students back to Waiting?" : "Reset all buses to Not Here? Earlier unshared bus moves will be invalidated.")) return;
+    busy=true;isSaving=true;showLoading(true,"Resetting…");
+    logEvent(pickup ? "Parent pickup reset" : "Bus reset","Started");
+    let completed=0;
+    try {
+      if(pickup) {
+        const items=await getItems(pickupListName,pickupSelect,mapPickup);
+        for(const item of items) {
+          if (!item.spot && item.status === "Waiting") continue;
+          await patch(pickupListName,item.id,{Spot:null,Status:"Waiting"},item.etag);completed++;
+        }
       } else {
-        const empty = document.createElement("div");
-        empty.className = "spotEmpty";
-        empty.textContent = "Empty";
-        spotCol.appendChild(empty);
-      }
-    }
-
-    document.querySelectorAll(".pickupDropzone").forEach(zone => {
-      zone.ondragover = e => {
-        if (e.dataTransfer.types.includes("application/x-parent-pickup")) e.preventDefault();
-      };
-      zone.ondrop = async e => {
-        const studentId = e.dataTransfer.getData("application/x-parent-pickup");
-        if (!studentId) return;
-        e.preventDefault();
-
-        const student = pickupsState.find(item => String(item.id) === String(studentId));
-        if (!student) return;
-
-        const destination = zone.id === "PP-Waiting" ? null : zone.id.replace("SPOT-", "");
-        if (destination !== null && !parkingSpots.includes(String(destination))) return;
-        if (String(student.spot || "") === String(destination || "")) return;
-
-        const previousSpot = student.spot;
-        const displacedStudent = destination === null
-          ? null
-          : pickupsState.find(item => String(item.spot) === String(destination) && String(item.id) !== String(student.id));
-        const displacedPreviousSpot = displacedStudent ? displacedStudent.spot : null;
-
-        if (displacedStudent) displacedStudent.spot = null;
-        student.spot = destination;
-        student.status = "Waiting";
-        renderPickups(pickupsState);
-
-        // Match the bus behavior: sound immediately when a student enters a spot.
-        // Moving a student back to Waiting remains silent.
-        if (soundEnabled && destination !== null) {
-          await playDingHere();
+        const token=crypto.randomUUID();
+        const items=await getItems(listName,busSelect,mapBus);
+        // Stamp every item, including already-Not-Here buses, to invalidate offline intents.
+        // A conditional write prevents reset from blindly overwriting an intervening update.
+        for(const item of items) {
+          await patch(listName,item.id,{Status:"Not Here",ResetToken:token},item.etag);completed++;
         }
-
-        isSaving = true;
-        setStatus("saving", "Saving parent pickup change…");
-        try {
-          if (displacedStudent) {
-            await updatePickupItem(displacedStudent.id, { Spot:null, Status:"Waiting" });
-          }
-          await updatePickupItem(student.id, { Spot:destination, Status:"Waiting" });
-          offline = false;
-          setStatus("ok", "Parent pickup change saved.");
-          setTimeout(clearStatusIfClean, 1200);
-        } catch (error) {
-          console.error("Parent pickup save failed:", error);
-          student.spot = previousSpot;
-          if (displacedStudent) displacedStudent.spot = displacedPreviousSpot;
-          renderPickups(pickupsState);
-          offline = true;
-          setStatus("offline", "Parent pickup change was not saved; the board was restored. Check the connection and try again.", false);
-        } finally {
-          isSaving = false;
-        }
-      };
-    });
-  }
-
-  /***************
-   * SAVE + RETRY
-   ***************/
-  async function saveBusStatus(busId, status) {
-    if (!accessToken) return;
-    isSaving = true;
-    setStatus("saving", "Saving change to SharePoint…");
-
-    try {
-      await updateListItem(busId, { Status: status });
-      // success: clear pending for this bus
-      pendingSaves.delete(String(busId));
-      offline = false;
-      setStatus("ok", pendingSaves.size ? `${pendingSaves.size} pending change(s) remaining.` : "Saved.");
-      setTimeout(clearStatusIfClean, 1200);
-
-      // After saving, do a refresh to reconcile with server truth
-      isSaving = false;
-      await refreshNow(false);
-      return;
-
-    } catch (err) {
-      console.warn("Save failed:", err);
-      offline = true;
-      setStatus("offline", "Offline — change not saved. We’ll retry when connection returns.", true);
-
-      // Keep UI as-is (optimistic), do NOT refresh from server
-      // Increase backoff & keep polling slower
-      bumpBackoffOnFailure();
-
-    } finally {
-      isSaving = false;
-    }
-  }
-
-  async function retryPendingSaves() {
-    if (!accessToken) return;
-    if (pendingSaves.size === 0) return;
-
-    // avoid parallel saving
-    if (isSaving) return;
-
-    isSaving = true;
-    setStatus("saving", `Retrying ${pendingSaves.size} pending save(s)…`, true);
-
-    try {
-      // retry in stable order (oldest first)
-      const entries = Array.from(pendingSaves.entries())
-        .sort((a,b) => (a[1].updatedAt || 0) - (b[1].updatedAt || 0));
-
-      for (const [id, info] of entries) {
-        await updateListItem(id, { Status: info.desiredStatus });
-        pendingSaves.delete(String(id));
+        pendingSaves.clear();
       }
-
-      offline = false;
-      setStatus("ok", "Pending changes saved. Re-synced with SharePoint.");
-      setTimeout(clearStatusIfClean, 1500);
-
-    } catch (err) {
-      console.warn("Retry pending failed:", err);
-      offline = true;
-      setStatus("offline", "Still offline — pending changes not saved yet.", true);
-      bumpBackoffOnFailure();
-    } finally {
-      isSaving = false;
-    }
+      logEvent(pickup ? "Parent pickup reset" : "Bus reset","Completed",null,"","",`${completed} items updated.`);
+    } catch(error) {
+      notice("reset",`Reset stopped after ${completed} items. It may be partial; check the shared board before trying again.`);
+      logEvent(pickup ? "Parent pickup reset" : "Bus reset","Partial or failed",null,"","",`${completed} items updated. ${error.message}`);
+    } finally {busy=false;isSaving=false;showLoading(false);await refreshNow(false);}
   }
-
-  async function manualRetry() {
-    await retryPendingSaves();
-    if (!offline && pendingSaves.size === 0) {
-      await refreshNow(false);
-    }
-  }
-
-  async function updateListItem(id, bodyObj) {
-    const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items(${id})`;
-    const response = await fetch(endpoint, {
-      method:"PATCH",
-      headers:{
-        "Authorization":`Bearer ${accessToken}`,
-        "Accept":"application/json;odata=nometadata",
-        "Content-Type":"application/json;odata=nometadata",
-        "IF-MATCH":"*"
-      },
-      body: JSON.stringify(bodyObj)
-    });
-    if(!response.ok) {
-      const txt = await response.text().catch(()=>"(no body)");
-      throw new Error(`Update failed ${response.status}: ${txt}`);
-    }
-  }
-
-  async function updatePickupItem(id, bodyObj) {
-    const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${pickupListName}')/items(${id})`;
-    const response = await fetch(endpoint, {
-      method:"PATCH",
-      headers:{
-        "Authorization":`Bearer ${accessToken}`,
-        "Accept":"application/json;odata=nometadata",
-        "Content-Type":"application/json;odata=nometadata",
-        "IF-MATCH":"*"
-      },
-      body:JSON.stringify(bodyObj)
-    });
-    if (!response.ok) {
-      const txt = await response.text().catch(() => "(no body)");
-      throw new Error(`Parent pickup update failed ${response.status}: ${txt}`);
-    }
-  }
-
-  /***************
-   * RESET
-   ***************/
-  resetButton.addEventListener("click", async () => {
-    if (!confirm("Are you sure you want to reset all buses to 'Not Here'?")) return;
-
-    // If offline or pending, warn
-    if (offline || pendingSaves.size > 0) {
-      const ok = confirm("You appear offline or have pending unsaved changes. Reset may not save. Continue anyway?");
-      if (!ok) return;
-    }
-
-    try {
-      showLoading(true, "Resetting…");
-      isSaving = true;
-      setStatus("saving", "Resetting buses to Not Here…");
-
-      const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items?$select=Id`;
-      const response = await fetch(endpoint, {
-        headers: { "Authorization": `Bearer ${accessToken}`, "Accept": "application/json;odata=nometadata" }
-      });
-      if (!response.ok) throw new Error(`SharePoint API error: ${response.status}`);
-      const data = await response.json();
-
-      for (const item of data.value) {
-        await updateListItem(item.Id, { Status: "Not Here" });
-      }
-
-      pendingSaves.clear();
-      setStatus("ok", "Reset complete.");
-      await refreshNow(false);
-
-    } catch (error) {
-      console.error("Reset failed:", error);
-      offline = true;
-      setStatus("offline", "Reset failed (likely offline). Board may be out of sync.", true);
-      bumpBackoffOnFailure();
-    } finally {
-      isSaving = false;
-      showLoading(false);
-    }
-  });
-
-  resetPickupButton.addEventListener("click", async () => {
-    if (!confirm("Reset Parent Pickup? This will move every student back to Waiting.")) return;
-
-    try {
-      showLoading(true, "Resetting parent pickup…");
-      isSaving = true;
-      setStatus("saving", "Moving all parent-pickup students back to Waiting…");
-
-      const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${pickupListName}')/items?$select=Id&$top=5000`;
-      const response = await fetch(endpoint, {
-        headers:{
-          "Authorization":`Bearer ${accessToken}`,
-          "Accept":"application/json;odata=nometadata"
-        }
-      });
-      if (!response.ok) throw new Error(`Parent pickup SharePoint API error: ${response.status}`);
-      const data = await response.json();
-
-      for (const item of data.value) {
-        await updatePickupItem(item.Id, { Spot:null, Status:"Waiting" });
-      }
-
-      pickupsState.forEach(student => {
-        student.spot = null;
-        student.status = "Waiting";
-      });
-      renderPickups(pickupsState);
-      offline = false;
-      setStatus("ok", "Parent pickup reset complete.");
-      setTimeout(clearStatusIfClean, 1200);
-    } catch (error) {
-      console.error("Parent pickup reset failed:", error);
-      offline = true;
-      setStatus("offline", "Parent pickup reset failed. No on-screen reset was applied.", false);
-    } finally {
-      isSaving = false;
-      showLoading(false);
-    }
-  });
-
-  /***************
-   * ONLINE EVENTS
-   ***************/
-  window.addEventListener("online", async () => {
-    // Browser thinks we're back online; attempt resync
-    if (!accessToken) return;
-    setStatus("warn", "Connection restored — syncing…", pendingSaves.size > 0);
-    await refreshNow(false);
-  });
-
-  window.addEventListener("offline", () => {
-    offline = true;
-    setStatus("offline", "No internet connection — showing last known board.", pendingSaves.size > 0);
-  });
-
-  // Initial hint (hidden once stable)
-  setStatus("warn", "Sign in to load the board.");
+  resetButton.addEventListener("click",()=>resetBoard(false));
+  resetPickupButton.addEventListener("click",()=>resetBoard(true));
+  window.addEventListener("online",()=>refreshNow(false));
+  window.addEventListener("offline",()=>{offline=true;setStatus("offline","No internet—new bus moves are unshared until reconnection. Automatic retries expire after two minutes.",true);});
+  window.addEventListener("focus",()=>refreshNow(false));
+  document.addEventListener("visibilitychange",()=>{if(document.visibilityState === "visible")void refreshNow(false);});
+  window.addEventListener("beforeunload",e=>{if(pendingSaves.size){e.preventDefault();e.returnValue="";}});
+  setStatus("warn","Sign in to load the board.");
   </script>
 </body>
 </html>
