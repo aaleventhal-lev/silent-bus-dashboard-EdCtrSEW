@@ -323,7 +323,7 @@
   const siteUrl = "https://thewatsoninstitute.sharepoint.com/sites/EdCenterSewickleyStaffResourceHub";
   const listName = "SEW Silent Bus Admin List";
   const pickupListName = "EdCtrSEW Parent Pickup Board";
-  const dashboardVersion = "2026-10-06-reliable-sync-v12";
+  const dashboardVersion = "2026-11-11-bus-drag-fix-v13";
   const parkingSpots = [
     "1","2","3","4","5","6","7","8","9",
     "10","11","12","13","14","15","16","17","18"
@@ -543,6 +543,11 @@
   let signedIn = false, busy = false, authRequired = false;
   let busSyncedAt = null, pickupSyncedAt = null;
   let logQueue = [], loggingBusy = false;
+    // NEW: A full reset is the only dashboard operation that blocks bus dragging.
+  let resetInProgress = false;
+
+   // NEW: Stores the timer that wakes the pending bus save system.
+  let pendingWakeTimer = null;
   const notices = new Map();
   const timeLabel = d => d ? new Intl.DateTimeFormat("en-US", {
     timeZone:"America/New_York", hour:"numeric", minute:"2-digit", second:"2-digit"
@@ -701,6 +706,60 @@
     if (current.etag !== p.etag) return "A newer update superseded this offline move";
     return "Write";
   }
+    // NEW: Schedule pending bus changes to be processed as soon as it is safe.
+//
+// This does not delete or reset local bus information when Wi-Fi is unavailable.
+// It only asks the existing refresh process to retry at the appropriate time.
+function schedulePendingProcessing() {
+  clearTimeout(pendingWakeTimer);
+  pendingWakeTimer = null;
+
+  if (!signedIn || resetInProgress || pendingSaves.size === 0) {
+    return;
+  }
+
+  const now = Date.now();
+
+  // Find bus changes that are still active and have not reached
+  // the end of the existing two-minute retry window.
+  const activePending = [...pendingSaves.values()].filter(
+    pending => !pending.expired && pending.deadline > now
+  );
+
+  if (activePending.length === 0) {
+    return;
+  }
+
+  // Respect the existing nextAttempt time set by processPending().
+  const earliestAttempt = Math.min(
+    ...activePending.map(pending => pending.nextAttempt || 0)
+  );
+
+  /*
+   * If another SharePoint operation is active, wait briefly.
+   * Otherwise, wait until the pending move is eligible for its next retry.
+   */
+  const delay = busy
+    ? 500
+    : Math.max(0, earliestAttempt - now);
+
+  pendingWakeTimer = setTimeout(() => {
+    pendingWakeTimer = null;
+
+    if (!signedIn || resetInProgress) {
+      return;
+    }
+
+    // Another operation may still be finishing.
+    if (busy) {
+      schedulePendingProcessing();
+      return;
+    }
+
+    void refreshNow(false);
+  }, delay);
+}
+
   async function processPending() {
     for (const [id,p] of pendingSaves) {
       if (p.expired || Date.now() >= p.deadline) { expirePending(); continue; }
@@ -780,31 +839,177 @@
       setStatus("offline",authRequired ? "Microsoft sign-in is required to reconnect. Unshared moves expire after two minutes." :
         "Cannot reach SharePoint—classroom screens may be out of date. Unshared moves retry automatically for up to two minutes.",true);
     } finally {
-      busy=false; isSaving=false; clearNotice("busy"); updateSyncInfo(); render(busesState); renderPickups(pickupsState);
-      if (showOverlay) showLoading(false);
-      void flushLogs();
-    }
+  busy = false;
+  isSaving = false;
+
+  clearNotice("busy");
+  updateSyncInfo();
+
+  /*
+   * These renders use the last successfully loaded state.
+   * If Wi-Fi failed, busesState and pickupsState are not emptied.
+   */
+  render(busesState);
+  renderPickups(pickupsState);
+
+  if (showOverlay) {
+    showLoading(false);
+  }
+
+  void flushLogs();
+
+  /*
+   * NEW:
+   * A bus may have been moved while this refresh was running.
+   * Wake the existing pending-save system now that busy is false.
+   */
+  schedulePendingProcessing();
+}
   }
   async function manualRetry() { await refreshNow(true); }
-  function moveBus(id,target) {
-    const bus=busesState.find(b=>String(b.id)===String(id));
-    if (!bus || !["Here","Not Here"].includes(target)) return;
-    if (busy) { notice("busy","A refresh or save is finishing. Please try the move again in a moment."); return; }
-    if (!bus.etag) { notice("version","Refresh the connection before changing this bus."); return; }
-    const key=String(id), existing=pendingSaves.get(key);
-    if (existing) {
-      if (target === bus.status) { pendingSaves.delete(key); logEvent("Bus move","Cancelled",bus,bus.status,target); render(busesState); return; }
-      if (!existing.expired) return;
-      pendingSaves.delete(key);
-    }
-    if (bus.status===target) return;
-    clearNotice(`bus-${key}`);
-    pendingSaves.set(key,{bus:{...bus},baseStatus:bus.status,desiredStatus:target,etag:bus.etag,
-      resetToken:bus.resetToken,deadline:Date.now()+RETRY_WINDOW_MS,nextAttempt:0,expired:false});
-    logEvent("Bus drag","Pending",bus,bus.status,target);
-    render(busesState); setStatus("saving","Saving bus change—arrival is not shared until confirmed.",true);
-    void refreshNow(false);
+function moveBus(id, target) {
+  const bus = busesState.find(
+    busItem => String(busItem.id) === String(id)
+  );
+
+  if (!bus || !["Here", "Not Here"].includes(target)) {
+    return;
   }
+
+  /*
+   * CHANGED:
+   * Do not reject a bus movement just because busy is true.
+   *
+   * busy may only mean that the dashboard is refreshing SharePoint
+   * or saving Parent Pickup information. Those activities should not
+   * cause a bus drop to be discarded.
+   *
+   * A full reset is different, so bus movement remains blocked
+   * while Reset Buses is running.
+   */
+  if (resetInProgress) {
+    notice(
+      "reset-active",
+      "The bus board is currently being reset. Please wait until the reset finishes."
+    );
+    return;
+  }
+
+  /*
+   * Continue protecting SharePoint with the confirmed item version.
+   * Do not create a pending move when the bus has no ETag.
+   */
+  if (!bus.etag) {
+    notice(
+      "version",
+      "Refresh the connection before changing this bus."
+    );
+    return;
+  }
+
+  const key = String(id);
+  const existing = pendingSaves.get(key);
+
+  /*
+   * If this bus already has a pending change, determine whether the
+   * new drag cancels it, duplicates it, or replaces an expired change.
+   */
+  if (existing) {
+    /*
+     * Dragging the bus back to its last confirmed SharePoint status
+     * cancels the local pending movement.
+     */
+    if (target === bus.status) {
+      pendingSaves.delete(key);
+
+      logEvent(
+        "Bus move",
+        "Cancelled",
+        bus,
+        bus.status,
+        target
+      );
+
+      render(busesState);
+      schedulePendingProcessing();
+      return;
+    }
+
+    /*
+     * The requested destination is already waiting to be saved.
+     * There is no reason to create a duplicate pending request.
+     */
+    if (!existing.expired && existing.desiredStatus === target) {
+      return;
+    }
+
+    /*
+     * Allow a new movement to replace an expired local request.
+     */
+    if (existing.expired) {
+      pendingSaves.delete(key);
+    } else {
+      return;
+    }
+  }
+
+  // Nothing needs to change if SharePoint already has this status.
+  if (bus.status === target) {
+    return;
+  }
+
+  clearNotice(`bus-${key}`);
+  clearNotice("busy");
+  clearNotice("reset-active");
+
+  /*
+   * NEW BEHAVIOR:
+   * Accept the movement immediately and store it in the existing
+   * pending bus save system.
+   */
+  pendingSaves.set(key, {
+    bus: { ...bus },
+    baseStatus: bus.status,
+    desiredStatus: target,
+    etag: bus.etag,
+    resetToken: bus.resetToken,
+    deadline: Date.now() + RETRY_WINDOW_MS,
+    nextAttempt: 0,
+    expired: false
+  });
+
+  /*
+   * Record whether the bus movement occurred while another
+   * dashboard operation was running.
+   */
+  logEvent(
+    "Bus drag",
+    busy ? "Pending during dashboard activity" : "Pending",
+    bus,
+    bus.status,
+    target
+  );
+
+  /*
+   * Immediately display the bus in the requested column.
+   * The dashed pending border will remain until SharePoint confirms it.
+   */
+  render(busesState);
+
+  setStatus(
+    "saving",
+    busy
+      ? "Bus change recorded. Another dashboard update is finishing; the bus will save automatically."
+      : "Saving bus change—arrival is not shared until confirmed.",
+    true
+  );
+
+  /*
+   * Ask the pending-save system to process this movement.
+   * If another refresh is underway, the scheduler will wait and retry.
+   */
+  schedulePendingProcessing();
+}
   function render(buses, oldMap={}) {
     for (const status of ["Not Here","Here"]) {
       const col=document.getElementById(status);
@@ -813,7 +1018,12 @@
       const sorted=display.filter(b=>b.status===status).sort((a,b)=>status === "Here" ? b.modified-a.modified :
         wingRank(a.wing)-wingRank(b.wing) || (a.name||"").localeCompare(b.name||"",undefined,{numeric:true,sensitivity:"base"}));
       for (const bus of sorted) {
-        const div=document.createElement("div"); div.className="bus"; div.draggable=!busy;
+        const div = document.createElement("div");
+div.className = "bus";
+
+// CHANGED: Refreshing or saving Parent Pickup does not disable bus dragging.
+// Only a complete board reset temporarily disables it.
+div.draggable = !resetInProgress;
         applyWingStyle(div,bus.wing);
         const heading=document.createElement("div"); heading.className="busHeading";
         const name=document.createElement("span"); name.className="busName"; name.textContent=bus.name;
@@ -827,8 +1037,17 @@
             `${bus.status === "Here" ? "Arrival" : "Change"} not yet shared—saving…`;
           div.appendChild(label);
           const cancel=document.createElement("button"); cancel.textContent="Cancel local move";
-          cancel.disabled=busy;
-          cancel.onclick=()=>{pendingSaves.delete(String(bus.id));render(busesState);logEvent("Bus move","Cancelled",bus);};
+          // CHANGED: A normal refresh should not prevent cancellation.
+// Only a complete board reset disables this button.
+          cancel.disabled = resetInProgress;
+          cancel.onclick = () => {
+            pendingSaves.delete(String(bus.id));
+            render(busesState);
+            logEvent("Bus move", "Cancelled", bus);
+
+          // NEW: Recalculate whether any other bus changes still need processing.
+            schedulePendingProcessing();
+          };
           div.appendChild(cancel);
         }
         if (oldMap[bus.id] && oldMap[bus.id] !== bus.status && !pending) div.classList.add("flash");
@@ -879,12 +1098,54 @@
     } catch(error) {
       notice("pickup","Parent pickup save could not be confirmed. Refreshing the shared board; a multi-student move may have partially saved.");
       logEvent("Parent pickup move","Unconfirmed",null,"","",error.message);
-    } finally {busy=false;isSaving=false;clearNotice("busy");await refreshNow(false);}
+    } finally {
+  busy = false;
+  isSaving = false;
+
+  clearNotice("busy");
+
+  /*
+   * Keep the existing Parent Pickup behavior:
+   * retrieve the confirmed shared board after the save attempt.
+   */
+  await refreshNow(false);
+
+  /*
+   * NEW:
+   * If a bus was moved while Parent Pickup was saving,
+   * make sure its pending save resumes.
+   */
+  schedulePendingProcessing();
+}
   }
-  async function resetBoard(pickup=false) {
-    if (busy) return;
-    if (!confirm(pickup ? "Move all parent-pickup students back to Waiting?" : "Reset all buses to Not Here? Earlier unshared bus moves will be invalidated.")) return;
-    busy=true;isSaving=true;showLoading(true,"Resetting…");
+  async function resetBoard(pickup = false) {
+  if (busy || resetInProgress) {
+    return;
+  }
+
+  if (
+    !confirm(
+      pickup
+        ? "Move all parent-pickup students back to Waiting?"
+        : "Reset all buses to Not Here? Earlier unshared bus moves will be invalidated."
+    )
+  ) {
+    return;
+  }
+
+  // NEW: A reset temporarily blocks bus dragging.
+  resetInProgress = true;
+  busy = true;
+  isSaving = true;
+
+  /*
+   * Rerender immediately so bus tiles and pending cancel buttons
+   * recognize that a reset is in progress.
+   */
+  render(busesState);
+  renderPickups(pickupsState);
+
+  showLoading(true, "Resetting…");
     logEvent(pickup ? "Parent pickup reset" : "Bus reset","Started");
     let completed=0;
     try {
@@ -908,11 +1169,42 @@
     } catch(error) {
       notice("reset",`Reset stopped after ${completed} items. It may be partial; check the shared board before trying again.`);
       logEvent(pickup ? "Parent pickup reset" : "Bus reset","Partial or failed",null,"","",`${completed} items updated. ${error.message}`);
-    } finally {busy=false;isSaving=false;clearNotice("busy");showLoading(false);await refreshNow(false);}
+    } finally {
+  busy = false;
+  isSaving = false;
+  resetInProgress = false;
+
+  clearNotice("busy");
+  clearNotice("reset-active");
+
+  showLoading(false);
+
+  /*
+   * Rerender now that dragging is available again.
+   */
+  render(busesState);
+  renderPickups(pickupsState);
+
+  await refreshNow(false);
+
+  /*
+   * If this was a Parent Pickup reset, a bus movement may still
+   * be pending and can now resume.
+   *
+   * A bus reset already clears pendingSaves in your existing code.
+   */
+  schedulePendingProcessing();
+}
   }
   resetButton.addEventListener("click",()=>resetBoard(false));
   resetPickupButton.addEventListener("click",()=>resetBoard(true));
-  window.addEventListener("online",()=>refreshNow(false));
+window.addEventListener("online", () => {
+  // CHANGED: Refresh the confirmed board when the browser reconnects.
+  void refreshNow(false);
+
+  // NEW: Resume pending bus saves after connectivity returns.
+  schedulePendingProcessing();
+});
   window.addEventListener("offline",()=>{offline=true;setStatus("offline","No internet—new bus moves are unshared until reconnection. Automatic retries expire after two minutes.",true);});
   window.addEventListener("focus",()=>refreshNow(false));
   document.addEventListener("visibilitychange",()=>{if(document.visibilityState === "visible")void refreshNow(false);});
